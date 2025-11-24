@@ -113,6 +113,9 @@ class ModelArguments:
     swin_type: Optional[str] = field(default="base")
     projector_outdim: Optional[int] = field(default=2048)
     mm_projector_type: Optional[str] = field(default="swin_conv")
+    mm_hidden_dim: Optional[int] = field(default=256)
+    mm_n_heads: Optional[int] = field(default=8)
+    mm_n_points: Optional[int] = field(default=4)
     model_version: Optional[str] = field(default="v1")
     load_mask2former: bool = field(default=True)
     seg_task: Optional[str] = field(default="panoptic")
@@ -410,11 +413,11 @@ def make_unify_datamodule(tokenizer, data_args, training_args, seg_task, cross_i
     # datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[2]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 
     # datasets =  [interactive__dataset]
-    datasets =  [interactive__cross_dataset]*2000
+    datasets =  [interactive__cross_dataset]
 
     # datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[1]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 
-    # datasets =   [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] +  [interactive__cross_dataset]*data_ratio[2]
+    #datasets =   [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] +  [interactive__cross_dataset]*data_ratio[2]
 
     # datasets = [panoptic_coco_dataset]*data_ratio[0] + [refcoco_dataset] * data_ratio[1] + [region_coco_dataset]*data_ratio[2] + [mm_conv_dataset]*data_ratio[3]
 

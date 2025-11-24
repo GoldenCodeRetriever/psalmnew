@@ -210,8 +210,14 @@ class COCO_panoptic_dataset(Dataset):
 
         num_class = len(self.coco_class_name)
         category = '<cls>, ' * (num_class-1) + '<cls>.'
-
-        sources_value = f'\nThis is all the candidate categories: {category}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining category information with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between categories and visual content for more accurate panoptic segmentation.'
+            sources_value = f'\nThis is all the candidate categories: {category}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all the candidate categories: {category}\n'
 
         sources = [[{'from': 'human', 'value':  prefix_inst + sources_value},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
@@ -338,7 +344,14 @@ class COCO_interactive_dataset(COCO_panoptic_dataset):
         num_target = len(data_dict['instances'])
         prefix_inst = 'This is an image <image>, Please segment by given regions'
         regions_inst = ' <region>,' * (num_target - 1) + ' <region>.'
-        sources_value = f'\nThis is all regions: {regions_inst}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining the given region prompts with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between the region prompts and visual content for more accurate region-based segmentation.'
+            sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all regions: {regions_inst}\n'
 
         sources = [
             [{'from': 'human', 'value': prefix_inst + sources_value},
@@ -460,8 +473,14 @@ class COCO_instance_dataset(COCO_interactive_dataset):
 
         num_class = len(self.coco_class_name)
         category = '<cls>, ' * (num_class - 1) + '<cls>.'
-
-        sources_value = f'\nThis is all the candidate categories: {category}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining category information with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between categories and visual content for more accurate panoptic segmentation.'
+            sources_value = f'\nThis is all the candidate categories: {category}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all the candidate categories: {category}\n'
 
         sources = [[{'from': 'human', 'value':  prefix_inst + sources_value},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
@@ -537,8 +556,14 @@ class COCO_panoptic_dataset_random(COCO_panoptic_dataset):
 
         num_class = len(self.coco_class_name)
         category = '<cls>, ' * (num_class-1) + '<cls>.'
-
-        sources_value = f'\nThis is all the candidate categories: {category}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining category information with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between categories and visual content for more accurate panoptic segmentation.'
+            sources_value = f'\nThis is all the candidate categories: {category}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all the candidate categories: {category}\n'
 
         sources = [[{'from': 'human', 'value':  prefix_inst + sources_value},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
@@ -591,8 +616,14 @@ class COCO_semantic_dataset(COCO_panoptic_dataset):
 
         num_class = len(self.coco_class_name)
         category = '<cls>, ' * (num_class-1) + '<cls>.'
-
-        sources_value = f'\nThis is all the candidate categories: {category}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining category information with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between categories and visual content for more accurate semantic segmentation.'
+            sources_value = f'\nThis is all the candidate categories: {category}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all the candidate categories: {category}\n'
 
         sources = [[{'from': 'human', 'value':  prefix_inst + sources_value},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
@@ -675,7 +706,16 @@ class RefCOCO_dataset(COCO_instance_dataset):
         instruction = ''
         for sent in sentences:
             instruction += ' {}.'.format(sent['sent'])
-        sources = [[{'from': 'human', 'value': prefix_inst + '\n<refer>'},
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining the referring expression with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between the referring expression and visual content for more accurate referring segmentation.'
+            refer_note = f'\n{deformable_note}'
+        else:
+            refer_note = ''
+        
+        sources = [[{'from': 'human', 'value': prefix_inst + '\n<refer>' + refer_note},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
 
         text_dict = self.preprocess_llama2(sources, self.tokenizer)
@@ -802,7 +842,14 @@ class interactive_dataset(COCO_panoptic_dataset):
         num_target = len(data_dict['instances'])
         prefix_inst = 'This is an image <image>, Please segment by given regions'
         regions_inst = ' <region>,' * (num_target - 1) + ' <region>.'
-        sources_value = f'\nThis is all regions: {regions_inst}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining the given region prompts with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between the region prompts and visual content for more accurate region-based segmentation.'
+            sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all regions: {regions_inst}\n'
 
         sources = [
             [{'from': 'human', 'value': prefix_inst + sources_value},
@@ -927,7 +974,14 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         num_target = len(data_dict['instances']) 
         prefix_inst = 'This is an image <image>, Please segment by given regions.'
         regions_inst = ' <region>,' * (num_target - 1) + ' <region>.'
-        sources_value = f'\nThis is all regions: {regions_inst}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining the given region prompts with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between the region prompts and visual content for more accurate region-based segmentation.'
+            sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all regions: {regions_inst}\n'
 
         sources = [
             [{'from': 'human', 'value': prefix_inst + sources_value},
@@ -1043,8 +1097,14 @@ class instance_dataset(interactive_dataset):
 
         num_class = len(self.coco_class_name)
         category = '<cls>, ' * (num_class - 1) + '<cls>.'
-
-        sources_value = f'\nThis is all the candidate categories: {category}\n'
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining category information with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between categories and visual content for more accurate panoptic segmentation.'
+            sources_value = f'\nThis is all the candidate categories: {category}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all the candidate categories: {category}\n'
 
         sources = [[{'from': 'human', 'value':  prefix_inst + sources_value},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
@@ -1153,7 +1213,16 @@ class referring_dataset(instance_dataset):
         instruction = ''
         for sent in sentences:
             instruction += ' {}.'.format(sent['sent'])
-        sources = [[{'from': 'human', 'value': prefix_inst + '\n<refer>'},
+        
+        # 检查是否使用deformable模式
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            deformable_note = ' Note: After the image token (<image>), there will be a deformable feature token (<image_deform>) that contains early-fused features combining the referring expression with multi-scale visual features through deformable attention. You can use this deformable feature as auxiliary information to better understand the relationship between the referring expression and visual content for more accurate referring segmentation.'
+            refer_note = f'\n{deformable_note}'
+        else:
+            refer_note = ''
+        
+        sources = [[{'from': 'human', 'value': prefix_inst + '\n<refer>' + refer_note},
                     {'from': 'gpt', 'value': '\nSure, the segmentation result is <seg>'}]]
 
         text_dict = self.preprocess_llama2(sources, self.tokenizer)

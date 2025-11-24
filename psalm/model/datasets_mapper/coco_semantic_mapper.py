@@ -85,7 +85,7 @@ def build_transform_gen(cfg):
         T.ResizeShortestEdge(
             short_edge_length=image_size, max_size=image_size
         ),
-        T.FixedSizeCrop(crop_size=(image_size, image_size), seg_pad_value=0),
+        T.FixedSizeCrop(crop_size=(image_size, image_size)),
     ])
 
     return augmentation
@@ -237,7 +237,7 @@ def build_transform_gen_for_eval(cfg):
         T.ResizeShortestEdge(
             short_edge_length=image_size, max_size=image_size
         ),
-        T.FixedSizeCrop(crop_size=(image_size, image_size), seg_pad_value=0),
+        T.FixedSizeCrop(crop_size=(image_size, image_size)),
     ])
 
     return augmentation

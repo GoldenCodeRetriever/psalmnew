@@ -719,7 +719,16 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         prefix_inst = 'Based on the regions indicated in Image <image>, Please doing Semantic Segmentation on this Image <image1>.'
         # prefix_inst = 'This is an image <image1>, Please doing Semantic Segmentation according to the regions from target image <image> .'
         regions_inst = ' <region>,' * (num_target - 1) + ' <region>.'
-        sources_value = f'\nThis is all regions: {regions_inst}\n'
+        
+        # 检查是否使用deformable模式（通过检查mm_projector_type）
+        use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
+        if use_deformable:
+            # 添加对deformable特征的说明
+            # 对于跨图任务，使用提示图的区域特征作为zq，只对目标图做deformable attention
+            deformable_note = ' Note: After the target image token (<image1>), there will be a deformable feature token (<image1_deform>) that contains early-fused features. These features are computed by using the region features extracted from Image <image> (the prompt image) as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. This allows the model to find regions in Image <image1> that match the prompts from Image <image>. You can use this deformable feature as auxiliary information to better understand the cross-image relationship for more accurate segmentation.'
+            sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
+        else:
+            sources_value = f'\nThis is all regions: {regions_inst}\n'
 
         sources = [
             [{'from': 'human', 'value': prefix_inst + sources_value},

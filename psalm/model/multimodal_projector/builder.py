@@ -400,6 +400,7 @@ class SimpleResBlock(nn.Module):
         x = self.pre_norm(x)
         return x + self.proj(x)
 
+from psalm.model.multimodal_projector.deformable_alignment import MultiScaleDeformableCrossAttentionAlignment
 
 def build_vision_projector(config, delay_load=False, **kwargs):
     projector_type = getattr(config, 'mm_projector_type', 'linear')
@@ -422,6 +423,34 @@ def build_vision_projector(config, delay_load=False, **kwargs):
         out_dim = getattr(config,'projector_outdim',4096)
         input_dim = getattr(config,'mm_input_embeds',1024)
         return ResNetSwin(input_dim=input_dim,out_dim=out_dim)
+
+    # 新增：Deformable Multi-Scale 投影器
+    if projector_type == 'deformable':
+        # 获取配置参数，使用默认值作为后备方案
+        query_dim = getattr(config, 'hidden_size', 2560)
+        hidden_dim = getattr(config, 'mm_hidden_dim', 256)
+        n_heads = getattr(config, 'mm_n_heads', 8)
+        n_points = getattr(config, 'mm_n_points', 4)
+        projector_outdim = getattr(config, 'projector_outdim', 2560)
+        
+        # Swin-B/L的多尺度特征通道数
+        # Swin-B: embed_dim=128, 所以通道数为 [128, 256, 512, 1024]
+        # Swin-L: embed_dim=192, 所以通道数为 [192, 384, 768, 1536]
+        swin_type = getattr(config, 'swin_type', 'base')
+        if swin_type == 'base':
+            vision_dims = [128, 256, 512, 1024]
+        else:  # 'large'
+            vision_dims = [192, 384, 768, 1536]
+        
+        return MultiScaleDeformableCrossAttentionAlignment(
+            query_dim=query_dim,
+            vision_dims=vision_dims,
+            hidden_dim=hidden_dim,
+            n_levels=4,
+            n_heads=n_heads,
+            n_points=n_points,
+            projector_outdim=projector_outdim
+        )
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
     if mlp_gelu_match:
