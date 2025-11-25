@@ -2,15 +2,18 @@
 # 使用Deformable模块的训练脚本
 # 该脚本启用MultiScaleDeformableCrossAttentionAlignment模块进行训练
 
-export DISABLE_ADDMM_CUDA_LT=1
 # export CUDA_VISIBLE_DEVICES=0,1,2,3  # 根据需要设置可见的GPU
-export PYTHONPATH=/home/lipeilang/projects/PSALM_new:$PYTHONPATH``
+export PYTHONPATH=/home/lipeilang/projects/PSALM_new:$PYTHONPATH
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:1024
+
+# Optional: path to pretrained weights for deformable projector
+# Can be set via environment variable: PRETRAIN_MM_DEFORMABLE_ADAPTER=/path/to/file
+# PRETRAIN_MM_DEFORMABLE_ADAPTER=${PRETRAIN_MM_DEFORMABLE_ADAPTER:-""}
 
 # 使用deepspeed进行分布式训练
 # --include: 指定使用的GPU节点，格式为 localhost:gpu_id1,gpu_id2,...
 # --master_port: 主节点端口号，避免冲突
-deepspeed --include localhost:4,5,6,7 --master_port 29500 psalm/train/train.py \
+deepspeed --include localhost:0,1,2,3,4,5,6,7 --master_port 29501 psalm/train/train.py \
     --deepspeed ./scripts/zero2.json \
     --model_name_or_path "/home/lipeilang/projects/PSALM_new/PSALM/phi-1_5_dev" \
     --version "llava_phi" \
@@ -41,14 +44,14 @@ deepspeed --include localhost:4,5,6,7 --master_port 29500 psalm/train/train.py \
     --fp16 True \
     --output_dir ./output/checkpoint/PSALM_deformable \
     --num_train_epochs 10 \
-    --per_device_train_batch_size 2 \
+    --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 15000 \
-    --save_total_limit 3 \
-    --learning_rate 6e-5 \
+    --save_steps 700 \
+    --save_total_limit 20 \
+    --learning_rate 5e-6 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
@@ -59,13 +62,15 @@ deepspeed --include localhost:4,5,6,7 --master_port 29500 psalm/train/train.py \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to none \
-    --seg_task 'referring' \
-    --cross_image_seg_task False \
+    --seg_task 'region' \
+    --cross_image_seg_task True \
+    # --train_backbone True \
+    # --freeze_vision_tower False \
     
     # 区域分割任务的提示类型（可选）
     # --region_mask_type 'box_visual_prompt_mask||scribble_visual_prompt_mask||point_visual_prompt_mask' \
 
-# ========== 使用说明 ==========
+# ========== 使用说明 ==========False
 # 1. 修改所有路径为实际数据路径
 # 2. 根据GPU数量调整 --include 参数
 # 3. 根据显存大小调整 batch_size 和 gradient_accumulation_steps
