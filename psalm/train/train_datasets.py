@@ -12,7 +12,7 @@ import torch
 import numpy as np
 import transformers
 
-from psalm.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, IMAGE1_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, \
+from psalm.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, IMAGE1_TOKEN_INDEX, IMAGE_DEFORM_TOKEN_INDEX, IMAGE1_DEFORM_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, \
     DEFAULT_IM_END_TOKEN, DEFAULT_SEG_TOKEN, SEG_TOKEN_INDEX, DEFAULT_CLS_TOKEN, CLS_TOKEN_INDEX, DEFAULT_REGION_TOKEN, \
     REGION_TOKEN_INDEX, REFER_TOKEN_INDEX
 from torch.utils.data import Dataset
@@ -154,11 +154,12 @@ class COCO_panoptic_dataset(Dataset):
         )
 
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -281,11 +282,12 @@ class COCO_interactive_dataset(COCO_panoptic_dataset):
         self.coco_id_to_cont_id = {coco_id: cont_id for cont_id, coco_id in enumerate(coco_class_ids)}
         self.coco_class_name = coco_class_name + ['background']
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -410,11 +412,12 @@ class COCO_instance_dataset(COCO_interactive_dataset):
         self.coco_class_name = coco_class_name + ['background']
 
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -655,11 +658,12 @@ class RefCOCO_dataset(COCO_instance_dataset):
 
         return token_refer_id
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX,refer_token_index=REFER_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index, '<refer>':refer_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>|<refer>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index, '<refer>':refer_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>|<refer>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -770,11 +774,12 @@ class interactive_dataset(COCO_panoptic_dataset):
         self.coco_id_to_cont_id = {coco_id: cont_id for cont_id, coco_id in enumerate(category_ids)}
         self.coco_class_name = category_names + ['background']
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -893,12 +898,14 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         print(f"category_ids: {category_ids}")
     
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
-                                 image1_token_index=IMAGE1_TOKEN_INDEX, 
+                                 image1_token_index=IMAGE1_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
+                                 image1_deform_token_index=IMAGE1_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image1>': image1_token_index, '<image_deform>': image_deform_token_index, '<image1_deform>': image1_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image1>|<image_deform>|<image1_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -1034,11 +1041,12 @@ class instance_dataset(interactive_dataset):
         self.coco_class_name =  category_names + ['background']
 
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -1162,11 +1170,12 @@ class referring_dataset(instance_dataset):
 
         return token_refer_id
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX,refer_token_index=REFER_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        special_token_map = {'<image>': image_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index, '<refer>':refer_token_index}
-        prompt_chunks = re.split('(<image>|<seg>|<cls>|<region>|<refer>)', prompt)
+        special_token_map = {'<image>': image_token_index, '<image_deform>': image_deform_token_index, '<seg>': seg_token_index, '<cls>': cls_token_index, '<region>':region_token_index, '<refer>':refer_token_index}
+        prompt_chunks = re.split('(<image>|<image_deform>|<seg>|<cls>|<region>|<refer>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -1454,6 +1463,7 @@ class MM_Conv_Dataset(Dataset):
 
 
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 image_deform_token_index=IMAGE_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, return_tensors=None):
         prompt_chunks = []
         special_tokens = []
@@ -1462,11 +1472,22 @@ class MM_Conv_Dataset(Dataset):
         for i, chunk in enumerate(image_splits):
             if i != 0:
                 special_tokens.append('<image>')
-            seg_splits = chunk.split('<seg>')
-            prompt_chunks.extend(seg_splits)
-            special_tokens.extend(['<seg>'] * (len(seg_splits)-1))
+            image_deform_splits = chunk.split('<image_deform>')
+            for j, subchunk in enumerate(image_deform_splits):
+                if j != 0:
+                    special_tokens.append('<image_deform>')
+                seg_splits = subchunk.split('<seg>')
+                prompt_chunks.extend(seg_splits)
+                special_tokens.extend(['<seg>'] * (len(seg_splits)-1))
         prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt_chunks]
-        special_indexes = [image_token_index if token == '<image>' else seg_token_index for token in special_tokens]
+        special_indexes = []
+        for token in special_tokens:
+            if token == '<image>':
+                special_indexes.append(image_token_index)
+            elif token == '<image_deform>':
+                special_indexes.append(image_deform_token_index)
+            else:  # '<seg>'
+                special_indexes.append(seg_token_index)
         # easy one
         input_ids = []
         for i, chunk in enumerate(prompt_chunks):
