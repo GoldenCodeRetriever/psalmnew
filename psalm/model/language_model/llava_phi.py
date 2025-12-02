@@ -1107,6 +1107,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 # Deformable模块的第二个图像特征token
                 if img1_deform_feature is not None:
                     cur_new_input_embeds.append(img1_deform_feature)
+                    print("img1_deform_feature appended, shape:", img1_deform_feature.shape)
                     cur_new_seg_query_mask.append(torch.zeros(img1_deform_feature.shape[0]))
                     if class_name_embedding_indices is not None:
                         cur_class_name_embedding_indices.append(
@@ -1490,6 +1491,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res5': multi_scale_features_list1[3],
                     }
                     deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1)
+                    print("deformable_features1, shape:", deformable_features1.shape)
                     
                     split_sizes1 = [img.shape[0] for img in image1]
                     baseline_features1 = torch.split(baseline_features1, split_sizes1, dim=0)
@@ -1518,6 +1520,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res5': multi_scale_features_list1[3],
                     }
                     deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1)
+                    print("deformable_features1, shape:", deformable_features1.shape)
                     
                     # 保持batch维度，不flatten
                     image1_features = baseline_features1  # (B, H*W, hidden_dim)
@@ -1851,11 +1854,49 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 new_region_embedding_masks = torch.stack(new_region_embedding_masks, dim=0)
 
             if attention_mask is not None:
+                # pad length should be based on current attention_mask width to avoid mismatch
+                pad_len = new_input_embeds.shape[1] - attention_mask.shape[1]
+                if pad_len < 0:
+                    # unexpected: new_input_embeds shorter than attention_mask, raise for debug
+                    raise AssertionError(f"new_input_embeds length {new_input_embeds.shape[1]} < attention_mask length {attention_mask.shape[1]}")
                 new_attn_mask_pad_left = torch.full(
-                    (attention_mask.shape[0], new_input_embeds.shape[1] - input_ids.shape[1]), True,
+                    (attention_mask.shape[0], pad_len), True,
                     dtype=attention_mask.dtype, device=attention_mask.device)
                 attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
-                assert attention_mask.shape == new_input_embeds.shape[:2]
+                if new_region_embedding_masks is not None:
+                    # pad region masks on the left to align with new_input_embeds
+                    left_pad_region = torch.zeros((new_region_embedding_masks.shape[0], pad_len),
+                                                  dtype=new_region_embedding_masks.dtype,
+                                                  device=new_region_embedding_masks.device)
+                    new_region_embedding_masks = torch.cat((left_pad_region, new_region_embedding_masks), dim=1)
+
+                if attention_mask.shape != new_input_embeds.shape[:2]:
+                    try:
+                        print('[PSALM-DEBUG] attention_mask.shape:', attention_mask.shape, 'new_input_embeds.shape:', new_input_embeds.shape)
+                        print('[PSALM-DEBUG] input_ids.shape:', input_ids.shape)
+                        # print first sample tokens and special token counts
+                        sample_input_ids = input_ids[0].tolist() if hasattr(input_ids, 'tolist') else None
+                        print('[PSALM-DEBUG] sample input_ids (first row, truncated):', sample_input_ids[:200] if sample_input_ids is not None else sample_input_ids)
+                        # count special tokens per sample
+                        try:
+                            # 使用模块顶部已导入的常量，避免在函数中再次导入导致名称被视为局部变量
+                            for i in range(min(4, input_ids.shape[0])):
+                                row = input_ids[i]
+                                counts = {
+                                    'IMAGE': int((row == IMAGE_TOKEN_INDEX).sum().item()),
+                                    'IMAGE1': int((row == IMAGE1_TOKEN_INDEX).sum().item()),
+                                    'IMAGE_DEFORM': int((row == IMAGE_DEFORM_TOKEN_INDEX).sum().item()),
+                                    'IMAGE1_DEFORM': int((row == IMAGE1_DEFORM_TOKEN_INDEX).sum().item()),
+                                    'SEG': int((row == SEG_TOKEN_INDEX).sum().item()),
+                                    'CLS': int((row == CLS_TOKEN_INDEX).sum().item()),
+                                    'REGION': int((row == REGION_TOKEN_INDEX).sum().item()),
+                                }
+                                print(f'[PSALM-DEBUG] row {i} special token counts:', counts)
+                        except Exception as e:
+                            print('[PSALM-DEBUG] failed to compute special token counts:', e)
+                    except Exception:
+                        pass
+                    raise AssertionError(f"attention_mask.shape {attention_mask.shape} != new_input_embeds.shape[:2] {new_input_embeds.shape[:2]}")
 
         return None, attention_mask, past_key_values, new_input_embeds, new_labels, new_seg_query_masks, new_class_name_embedding_indices, new_region_embedding_masks, new_refer_embedding_indices
 
@@ -2014,6 +2055,35 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
 
         # 处理区域嵌入，用于区域分割任务，区域分割任务需区域嵌入。region_embedding_masks 标记区域令牌位置，提取对应语义特征
         if region_embedding_masks is not None:
+            # Ensure region_embedding_masks aligns with hidden_states length to avoid indexing errors
+            try:
+                hs_len = hidden_states.shape[1]
+                # if masks is a tensor of shape (B, L) or list
+                if isinstance(region_embedding_masks, torch.Tensor):
+                    aligned_masks = []
+                    for m in region_embedding_masks:
+                        if m.shape[0] > hs_len:
+                            # trim left (keep last hs_len positions)
+                            m = m[-hs_len:]
+                        elif m.shape[0] < hs_len:
+                            pad = torch.zeros((hs_len - m.shape[0],), dtype=m.dtype, device=m.device)
+                            m = torch.cat((pad, m), dim=0)
+                        aligned_masks.append(m)
+                    region_embedding_masks = torch.stack(aligned_masks, dim=0)
+                else:
+                    # assume it's a list of masks
+                    aligned_masks = []
+                    for m in region_embedding_masks:
+                        if m.shape[0] > hs_len:
+                            m = m[-hs_len:]
+                        elif m.shape[0] < hs_len:
+                            pad = torch.zeros((hs_len - m.shape[0],), dtype=m.dtype, device=m.device)
+                            m = torch.cat((pad, m), dim=0)
+                        aligned_masks.append(m)
+                    region_embedding_masks = torch.stack(aligned_masks, dim=0)
+            except Exception:
+                # fall back to original mask if alignment fails for unexpected reason
+                pass
             region_embedding_list = self.get_region_embedding(hidden_states, region_embedding_masks)
              # 将每个区域的嵌入投影到掩码解码器的隐藏维度
             region_embedding_list = [self.region_projector(region_embedding) for region_embedding in
