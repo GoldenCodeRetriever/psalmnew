@@ -992,7 +992,7 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         # 检查是否使用deformable模式
         use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
         if use_deformable:
-            deformable_note = ' Note: After the target image token (<image1>), there will be a deformable feature token (<image1_deform>) that contains early-fused features. These features are computed by using the region features extracted from Image <image> (the source image) as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. This allows the model to find regions in image <image1> that match the prompts from image <image>. You can use this deformable feature as auxiliary information to better understand the cross-image relationship for more accurate segmentation.'
+            deformable_note = ' Note: Note: After the target image token (<image1>), there will be a sequence of deformable feature tokens (<image1_deform>) that contain early-fused features. These tokens are computed by using the region features extracted from Image <image> (the source image) as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. Specifically, they represent multiple potential matching regions in the target image. You can use these deformable features as auxiliary information to better understand the cross-image relationship for more accurate segmentation of all matching instances.'
             sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
         else:
             sources_value = f'\nThis is all regions: {regions_inst}\n'

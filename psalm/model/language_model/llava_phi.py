@@ -2263,7 +2263,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     
                     # 4. 计算 MSE Loss
                     # 这里的 300.0 是权重，可以根据 loss 大小调整
-                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 300.0
+                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 500.0
                 
         
                 loss_mask = 0.0
@@ -2287,6 +2287,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                             loss_region_class += mask_losses[k]
                     else:
                         mask_losses.pop(k)
+
+                loss_region_class= loss_region_class*0.05        
                 mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class + loss_proposal
                 
                 # 确保损失为张量类型
