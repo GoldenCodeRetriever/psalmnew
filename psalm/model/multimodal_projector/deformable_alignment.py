@@ -128,48 +128,107 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         reference_points = torch.stack(reference_points_list, dim=0).unsqueeze(0)
         return reference_points
 
-
-    def get_proposal_based_reference_points(self, query_embed, feature_flatten, spatial_shape):
-        """
-        [新增] 基于相关性图生成动态参考点 (Proposal-based Reference Points)
-        适用于跨图分割等空间不对应的任务。
+    # 每个Query只对应一个reference point
+    # def get_proposal_based_reference_points(self, query_embed, feature_flatten, spatial_shape):
+    #     """
+    #     [新增] 基于相关性图生成动态参考点 (Proposal-based Reference Points)
+    #     适用于跨图分割等空间不对应的任务。
         
-        Args:
-            query_embed: (B, N_q, C) 投影后的查询特征
-            feature_flatten: (B, L, C) 投影后的某一尺度特征图 (通常取最高层级 res5)
-            spatial_shape: (H, W) 该层级特征图的空间形状
+    #     Args:
+    #         query_embed: (B, N_q, C) 投影后的查询特征
+    #         feature_flatten: (B, L, C) 投影后的某一尺度特征图 (通常取最高层级 res5)
+    #         spatial_shape: (H, W) 该层级特征图的空间形状
             
+    #     Returns:
+    #         reference_points: (B, N_q, 1, 2) 归一化坐标 [0, 1]
+    #     """
+    #     B, N_q, C = query_embed.shape
+    #     H, W = spatial_shape
+        
+    #     # 1. 计算相似度矩阵 (Cosine Similarity)
+    #     # 对 Query 和 Feature 进行归一化，使计算结果为余弦相似度，训练更稳定
+    #     q_norm = F.normalize(query_embed, p=2, dim=-1)      # (B, N_q, C)
+    #     f_norm = F.normalize(feature_flatten, p=2, dim=-1)  # (B, HW, C)
+        
+    #     # 矩阵乘法: (B, N_q, C) @ (B, C, HW) -> (B, N_q, HW)
+    #     similarity = torch.bmm(q_norm, f_norm.transpose(1, 2))
+        
+    #     # 2. 找到响应最大的位置 (Argmax)
+    #     # 这一步不需要梯度，我们只需要坐标
+    #     max_indices = torch.argmax(similarity, dim=-1) # (B, N_q)
+        
+    #     # 3. 将一维索引转换为归一化坐标 (x, y)
+    #     y_indices = max_indices // W
+    #     x_indices = max_indices % W
+        
+    #     # 加 0.5 取像素中心，并归一化到 [0, 1]
+    #     ref_x = (x_indices.float() + 0.5) / W
+    #     ref_y = (y_indices.float() + 0.5) / H
+        
+    #     # 堆叠坐标: (B, N_q, 2)
+    #     ref_points = torch.stack([ref_x, ref_y], dim=-1)
+        
+    #     # 扩展维度以匹配后续 repeat 操作: (B, N_q, 1, 2)
+    #     return ref_points.unsqueeze(2)
+
+
+    def get_proposal_based_reference_points(self, query_embed, feature_flatten, spatial_shape, K=10):
+        """
+        生成 Top-K 个分散的参考点
+        Args:
+            query_embed: [B, N_q, C] (N_q通常为1)
+            feature_flatten: [B, H*W, C] (res5特征)
+            spatial_shape: (H, W)
+            K: int, 采样点数量
         Returns:
-            reference_points: (B, N_q, 1, 2) 归一化坐标 [0, 1]
+            ref_points: [B, N_q, K, 2]
         """
         B, N_q, C = query_embed.shape
         H, W = spatial_shape
         
-        # 1. 计算相似度矩阵 (Cosine Similarity)
-        # 对 Query 和 Feature 进行归一化，使计算结果为余弦相似度，训练更稳定
-        q_norm = F.normalize(query_embed, p=2, dim=-1)      # (B, N_q, C)
-        f_norm = F.normalize(feature_flatten, p=2, dim=-1)  # (B, HW, C)
-        
-        # 矩阵乘法: (B, N_q, C) @ (B, C, HW) -> (B, N_q, HW)
+        # 1. 计算相似度图 [B, N_q, H*W]
+        q_norm = F.normalize(query_embed, p=2, dim=-1)
+        f_norm = F.normalize(feature_flatten, p=2, dim=-1)
         similarity = torch.bmm(q_norm, f_norm.transpose(1, 2))
         
-        # 2. 找到响应最大的位置 (Argmax)
-        # 这一步不需要梯度，我们只需要坐标
-        max_indices = torch.argmax(similarity, dim=-1) # (B, N_q)
+        # 2. 转回 2D 空间进行 MaxPool [B, N_q, H, W]
+        similarity_map = similarity.view(B, N_q, H, W)
         
-        # 3. 将一维索引转换为归一化坐标 (x, y)
-        y_indices = max_indices // W
-        x_indices = max_indices % W
+        # 使用 3x3 MaxPool 抑制局部非极大值，强迫 Top-K 分散
+        # padding=1 保持尺寸不变
+        local_max = F.max_pool2d(similarity_map, kernel_size=3, stride=1, padding=1)
         
-        # 加 0.5 取像素中心，并归一化到 [0, 1]
+        # 生成掩码：只有局部最大值点保持原值，其余点置为极小值
+        keep_mask = (similarity_map == local_max)
+        similarity_suppressed = similarity_map.clone()
+        similarity_suppressed[~keep_mask] = -1e4  # 抑制非峰值点
+        
+        # 3. 展平并在分散后的图上取 Top-K
+        similarity_flat = similarity_suppressed.view(B, N_q, -1) # [B, N_q, HW]
+        
+        # 取 K 个最高点 [B, N_q, K]
+        # 注意：如果 feature map 总点数少于 K，这里可能会报错，通常 res5 至少有 10x10=100 个点，K=10 没问题
+        K = min(K, H * W) 
+        _, topk_indices = torch.topk(similarity_flat, k=K, dim=-1)
+        
+        # 4. 解析坐标
+        y_indices = topk_indices // W
+        x_indices = topk_indices % W
+        
+        # 归一化中心坐标 [0, 1]
         ref_x = (x_indices.float() + 0.5) / W
         ref_y = (y_indices.float() + 0.5) / H
         
-        # 堆叠坐标: (B, N_q, 2)
+        # 堆叠 [B, N_q, K, 2]
         ref_points = torch.stack([ref_x, ref_y], dim=-1)
         
-        # 扩展维度以匹配后续 repeat 操作: (B, N_q, 1, 2)
-        return ref_points.unsqueeze(2)
+        # [DEBUG] 偶尔打印一下，确保坐标真的散开了
+        if torch.rand(1).item() < 0.05:
+            print(f"[DEBUG] Top-{K} Points Sample (x,y):")
+            print(ref_points[0, 0, :10, :].cpu().numpy()) # 打印前5个点
+            
+        return ref_points
+
 
 
     def forward(
@@ -263,38 +322,66 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
             level_start_index, dtype=torch.long, device=device
         )  # (n_levels,)
         
-        if task_type == 'cross_image':
-            # --- [DEBUG] 打印标志，确认进入了跨图分支 ---
-            # 为了防止刷屏，只在 rank 0 或者偶尔打印，这里简单起见每次都打
-            # 建议在确认生效后注释掉
-            if torch.rand(1).item() < 0.05: # 5% 的概率打印，防止日志爆炸
-                print(f"\n[DEBUG] >>> Entering Cross-Image Alignment Branch! Task: {task_type}")
+        # if task_type == 'cross_image':
+        #     # --- [DEBUG] 打印标志，确认进入了跨图分支 ---
+        #     # 为了防止刷屏，只在 rank 0 或者偶尔打印，这里简单起见每次都打
+        #     # 建议在确认生效后注释掉
+        #     if torch.rand(1).item() < 0.05: # 5% 的概率打印，防止日志爆炸
+        #         print(f"\n[DEBUG] >>> Entering Cross-Image Alignment Branch! Task: {task_type}")
 
+        #     last_lvl_feat = value_list[-1]
+        #     last_lvl_shape = spatial_shapes[-1]
+            
+        #     # 计算最佳匹配位置
+        #     ref_points_prop = self.get_proposal_based_reference_points(
+        #         query, last_lvl_feat, last_lvl_shape
+        #     )
+            
+        #     # --- [DEBUG] 检查生成的坐标是否合理 ---
+        #     if torch.rand(1).item() < 0.05:
+        #         # 打印第一个 Batch 的第一个 Query 的坐标
+        #         sample_pt = ref_points_prop[0, 0, 0].detach().cpu().numpy()
+        #         print(f"[DEBUG] Spatial Shape (res5): {last_lvl_shape}")
+        #         print(f"[DEBUG] Sample Ref Point (Normalized): x={sample_pt[0]:.4f}, y={sample_pt[1]:.4f}")
+        #         # 检查是否都在 [0, 1] 之间
+        #         print(f"[DEBUG] Ref Point Range: min={ref_points_prop.min().item():.4f}, max={ref_points_prop.max().item():.4f}")
+                
+        #         # 如果全是 0.5，说明可能是初始状态或者哪里算错了
+        #         if (ref_points_prop == 0.5).all():
+        #             print("[WARNING] !!! All Reference Points are 0.5 (Center). Check Similarity Calculation !!!")
+        #         else:
+        #             print("[DEBUG] >>> Dynamic Reference Points generated successfully.")
+
+        #     # (B, N_q, 1, 2) -> (B, N_q, n_levels, 2)
+        #     reference_points = ref_points_prop.repeat(1, 1, self.n_levels, 1)
+
+
+        if task_type == 'cross_image':
+            # 设定我们要探测的目标数量 (K)
+            K = 10 
+            
+            # 使用 Res5 (最后一层) 计算相关性
             last_lvl_feat = value_list[-1]
             last_lvl_shape = spatial_shapes[-1]
             
-            # 计算最佳匹配位置
-            ref_points_prop = self.get_proposal_based_reference_points(
-                query, last_lvl_feat, last_lvl_shape
+            # 1. 获取 Top-K 参考点 [B, N_q, K, 2]
+            topk_ref_points = self.get_proposal_based_reference_points(
+                query, last_lvl_feat, last_lvl_shape, K=K
             )
             
-            # --- [DEBUG] 检查生成的坐标是否合理 ---
-            if torch.rand(1).item() < 0.05:
-                # 打印第一个 Batch 的第一个 Query 的坐标
-                sample_pt = ref_points_prop[0, 0, 0].detach().cpu().numpy()
-                print(f"[DEBUG] Spatial Shape (res5): {last_lvl_shape}")
-                print(f"[DEBUG] Sample Ref Point (Normalized): x={sample_pt[0]:.4f}, y={sample_pt[1]:.4f}")
-                # 检查是否都在 [0, 1] 之间
-                print(f"[DEBUG] Ref Point Range: min={ref_points_prop.min().item():.4f}, max={ref_points_prop.max().item():.4f}")
-                
-                # 如果全是 0.5，说明可能是初始状态或者哪里算错了
-                if (ref_points_prop == 0.5).all():
-                    print("[WARNING] !!! All Reference Points are 0.5 (Center). Check Similarity Calculation !!!")
-                else:
-                    print("[DEBUG] >>> Dynamic Reference Points generated successfully.")
+            # 2. 扩展 Query: [B, N_q, C] -> [B, N_q * K, C]
+            # 这一步是关键：把 1 个 Query 变成 K 个，分别对应 K 个参考点
+            # 逻辑：先在 dim=2 复制 K 份，然后展平到 dim=1
+            query_expanded = query.unsqueeze(2).repeat(1, 1, K, 1).flatten(1, 2)
+            
+            # 3. 扩展 Reference Points: [B, N_q, K, 2] -> [B, N_q * K, n_levels, 2]
+            # 先展平 dim=1,2 -> [B, N_q*K, 2]
+            # 再增加 n_levels 维度并复制
+            ref_points_expanded = topk_ref_points.flatten(1, 2).unsqueeze(2).repeat(1, 1, self.n_levels, 1)
+            
+            reference_points = ref_points_expanded
+            final_query = query_expanded  # 使用扩展后的 Query 进 Attention
 
-            # (B, N_q, 1, 2) -> (B, N_q, n_levels, 2)
-            reference_points = ref_points_prop.repeat(1, 1, self.n_levels, 1)
             
         else:
             # 策略 A: 默认中心点 (Default Center)
@@ -314,7 +401,7 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         #   - input_level_start_index: (n_levels,)
         #   - input_padding_mask: (B, sum(H*W)), 可选
         output = self.deform_attn(
-            query=query,
+            query=final_query,
             reference_points=reference_points,
             input_flatten=value_with_pos,
             input_spatial_shapes=spatial_shapes_tensor,
