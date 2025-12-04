@@ -194,6 +194,9 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         # 2. 转回 2D 空间进行 MaxPool [B, N_q, H, W]
         similarity_map = similarity.view(B, N_q, H, W)
         
+        # [新增] 这里我们先保留原始的 similarity_map 用于计算 Loss
+        raw_similarity_map = similarity_map
+
         # 使用 3x3 MaxPool 抑制局部非极大值，强迫 Top-K 分散
         # padding=1 保持尺寸不变
         local_max = F.max_pool2d(similarity_map, kernel_size=3, stride=1, padding=1)
@@ -227,7 +230,8 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
             print(f"[DEBUG] Top-{K} Points Sample (x,y):")
             print(ref_points[0, 0, :10, :].cpu().numpy()) # 打印前5个点
             
-        return ref_points
+        # [修改] 返回值增加 raw_similarity_map
+        return ref_points, raw_similarity_map
 
 
 
@@ -355,6 +359,8 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         #     # (B, N_q, 1, 2) -> (B, N_q, n_levels, 2)
         #     reference_points = ref_points_prop.repeat(1, 1, self.n_levels, 1)
 
+        # 初始化 auxiliary_loss_data
+        similarity_map = None
 
         if task_type == 'cross_image':
             # 设定我们要探测的目标数量 (K)
@@ -365,7 +371,8 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
             last_lvl_shape = spatial_shapes[-1]
             
             # 1. 获取 Top-K 参考点 [B, N_q, K, 2]
-            topk_ref_points = self.get_proposal_based_reference_points(
+            # 接收 similarity_map
+            topk_ref_points, similarity_map = self.get_proposal_based_reference_points(
                 query, last_lvl_feat, last_lvl_shape, K=K
             )
             
@@ -412,7 +419,7 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         # 7. 最终投影
         output = self.output_proj(output)  # (B, N_q, projector_outdim)
         
-        return output
+        return output, similarity_map
 
 
 # ====================================================================================================

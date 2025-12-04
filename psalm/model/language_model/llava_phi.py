@@ -49,6 +49,7 @@ class CausalOutputWithMask(CausalLMOutputWithPast):
     loss_class_name_class: Optional[torch.FloatTensor] = None
     loss_region_class: Optional[torch.FloatTensor] = None
     loss_llm: Optional[torch.FloatTensor] = None
+    loss_proposal: Optional[torch.FloatTensor] = None
 
 
 class PSALMModel(LlavaMetaModel, PhiModel):
@@ -1277,6 +1278,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         
         vision_tower = self.get_vision_tower()
         seg_query_mask = torch.zeros_like(input_ids)
+        aux_similarity_maps = []
 
         # 非多模态场景
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
@@ -1456,7 +1458,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
+                    deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
                     
                     split_sizes = [image.shape[0] for image in images]
                     baseline_features = torch.split(baseline_features, split_sizes, dim=0)
@@ -1484,7 +1486,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
+                    deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
                     
                     # 保持batch维度，不flatten，在batch循环中处理
                     image_features = baseline_features  # (B, H*W, hidden_dim)
@@ -1510,7 +1512,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list1[2],
                         'res5': multi_scale_features_list1[3],
                     }
-                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                    deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                    if similarity_map1 is not None:
+                        aux_similarity_maps.append(similarity_map1)
                     print("deformable_features1, shape:", deformable_features1.shape)
                     
                     split_sizes1 = [img.shape[0] for img in image1]
@@ -1539,7 +1543,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list1[2],
                         'res5': multi_scale_features_list1[3],
                     }
-                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                    deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                    if similarity_map1 is not None:
+                        aux_similarity_maps.append(similarity_map1)
                     print("deformable_features1, shape:", deformable_features1.shape)
                     
                     # 保持batch维度，不flatten
@@ -1918,7 +1924,21 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         pass
                     raise AssertionError(f"attention_mask.shape {attention_mask.shape} != new_input_embeds.shape[:2] {new_input_embeds.shape[:2]}")
 
-        return None, attention_mask, past_key_values, new_input_embeds, new_labels, new_seg_query_masks, new_class_name_embedding_indices, new_region_embedding_masks, new_refer_embedding_indices
+        if len(aux_similarity_maps) > 0:
+            # 假设每次 append 的是 [B_chunk, 1, H, W]，需要拼回去
+            # 如果 logic 比较复杂，可以先简化：只取第一个非空的作为代表，或者在这个函数里先不拼，直接返回 list
+            # 简单起见，如果是在 batch loop 外面算的，它应该就是 [B, 1, H, W]
+            # 如果是在 loop 里算的，需要 cat
+            if isinstance(aux_similarity_maps[0], torch.Tensor):
+                # 这种情况下通常已经是完整的 batch 或者 list of chunks
+                if len(aux_similarity_maps) == 1:
+                    aux_similarity_maps = aux_similarity_maps[0]
+                else:
+                    aux_similarity_maps = torch.cat(aux_similarity_maps, dim=0)
+        else:
+            aux_similarity_maps = None            
+
+        return None, attention_mask, past_key_values, new_input_embeds, new_labels, new_seg_query_masks, new_class_name_embedding_indices, new_region_embedding_masks, new_refer_embedding_indices, aux_similarity_maps
 
 
     def get_SEG_embedding(self,hidden_states, refer_embedding_indices):
@@ -2030,7 +2050,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             else:
                 instances = None
             
-            input_ids, attention_mask, past_key_values, inputs_embeds, labels, seg_query_mask, class_name_embedding_indices, region_embedding_masks, refer_embedding_indices = self.prepare_inputs_labels_for_multimodal(
+            input_ids, attention_mask, past_key_values, inputs_embeds, labels, seg_query_mask, class_name_embedding_indices, region_embedding_masks, refer_embedding_indices, aux_similarity_maps = self.prepare_inputs_labels_for_multimodal(
                 input_ids, attention_mask, past_key_values, labels, images, images1, class_name_embedding_indices,
                 class_name_ids, cls_indices, instances, token_refer_id, refer_embedding_indices, dataset_type=dataset_type)
         # 处理普通多模态输入（无 <seg> 令牌）
@@ -2215,6 +2235,35 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
     
                 mask_losses = self.criterion(mask_outputs, targets)
                 weight_dict = self.weight_dict
+
+                # ================= [新增/修改：计算 Proposal Loss] =================
+                loss_proposal = torch.tensor(0.0, device=self.device)
+                
+                # 只有在 (跨图任务) 且 (有 aux_similarity_maps) 时计算
+                # 注意：aux_similarity_maps 是我们之前修改 prepare_inputs... 返回的
+                if 'cross' in batch_dataset_type and aux_similarity_maps is not None:
+                    
+                    # 1. 获取特征图尺寸 (从 similarity map 获取)
+                    # aux_similarity_maps: [B, 1, H_feat, W_feat]
+                    feat_h, feat_w = aux_similarity_maps.shape[-2:]
+                    
+                    # 2. 获取原图尺寸 (直接使用 target_images，它肯定是对的那张图)
+                    if isinstance(target_images, list):
+                        img_h, img_w = target_images[0].shape[-2:]
+                    else:
+                        img_h, img_w = target_images.shape[-2:]
+                        
+                    # 3. 生成 GT Heatmap (直接复用 gt_instances)
+                    # 这些 instances 已经被移动到 device 上了，且对应 target_images
+                    gt_heatmap = self.generate_gaussian_heatmap(
+                        (img_h, img_w), 
+                        (feat_h, feat_w), 
+                        gt_instances
+                    )
+                    
+                    # 4. 计算 MSE Loss
+                    # 这里的 300.0 是权重，可以根据 loss 大小调整
+                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 300.0
                 
         
                 loss_mask = 0.0
@@ -2238,7 +2287,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                             loss_region_class += mask_losses[k]
                     else:
                         mask_losses.pop(k)
-                mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class
+                mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class + loss_proposal
                 
                 # 确保损失为张量类型
                 if isinstance(loss_class_name_class, float):
@@ -2264,6 +2313,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 loss_SEG_class=loss_SEG_class.detach(),
                 loss_class_name_class=loss_class_name_class.detach(),
                 loss_region_class=loss_region_class.detach(),
+                loss_proposal=loss_proposal.detach(),
                 loss_llm=llm.detach(),
             )
 
@@ -2609,6 +2659,60 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
 
             return processed_results
 
+    def generate_gaussian_heatmap(self, image_size, feature_size, instances, sigma=2.0):
+        """
+        生成高斯热图 GT
+        Args:
+            image_size: (H_img, W_img) 原始图片大小
+            feature_size: (H_feat, W_feat) 特征图大小 (32, 32)
+            instances: Detectron2 Instances 对象列表，包含 gt_masks
+        Returns:
+            heatmap: [B, 1, H_feat, W_feat]
+        """
+        B = len(instances)
+        H, W = feature_size
+        device = instances[0].gt_classes.device
+        gt_heatmap = torch.zeros(B, 1, H, W, device=device)
+        
+        for b_idx, inst in enumerate(instances):
+            if len(inst) == 0: continue
+            
+            # 获取当前图片所有 GT 的中心点
+            # 假设 inst.gt_masks 是 BitMasks 或 Tensor
+            if hasattr(inst, 'gt_masks'):
+                if isinstance(inst.gt_masks, torch.Tensor):
+                    masks = inst.gt_masks
+                else: # BitMasks
+                    masks = inst.gt_masks.tensor
+                
+                # 计算重心
+                # masks: [N, H_img, W_img]
+                for mask in masks:
+                    # 简单粗暴的方法：nonzero 取平均
+                    # 注意：这里 mask 是原图大小，需要缩放到 feature map 大小
+                    y_indices, x_indices = torch.where(mask)
+                    if len(y_indices) == 0: continue
+                    
+                    center_y = y_indices.float().mean()
+                    center_x = x_indices.float().mean()
+                    
+                    # 映射到 Feature Map 坐标
+                    feat_y = int(center_y / image_size[0] * H)
+                    feat_x = int(center_x / image_size[1] * W)
+                    
+                    # 限制范围
+                    feat_y = min(max(feat_y, 0), H - 1)
+                    feat_x = min(max(feat_x, 0), W - 1)
+                    
+                    # 在 (feat_x, feat_y) 处生成高斯点
+                    # 创建网格
+                    y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device))
+                    gaussian = torch.exp(-((x_grid - feat_x)**2 + (y_grid - feat_y)**2) / (2 * sigma**2))
+                    
+                    # 叠加到 Heatmap (取最大值，处理重叠)
+                    gt_heatmap[b_idx, 0] = torch.maximum(gt_heatmap[b_idx, 0], gaussian)
+                    
+        return gt_heatmap
 
 
 
