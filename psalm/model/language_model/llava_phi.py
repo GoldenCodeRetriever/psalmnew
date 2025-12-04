@@ -65,6 +65,20 @@ class PSALMModel(LlavaMetaModel, PhiModel):
             else:
                 self.vision_tower = build_swin_l(None)
             self.mm_projector = build_vision_projector(config)
+
+            if getattr(config, 'mm_projector_type', 'conv') == 'deformable':
+                import copy
+                # 确保引用 build_vision_projector
+                
+                print(f"Initializing baseline_projector in __init__ (swin_type={swin_type})...")
+                baseline_config = copy.deepcopy(config)
+                # 强制使用 swin_conv 以匹配 Res5 的真实通道数
+                baseline_config.mm_projector_type = 'swin_conv'
+                # 根据 Swin 类型强制指定输入维度
+                baseline_config.mm_input_embeds = 1024 if swin_type == 'base' else 1536
+                
+                self.baseline_projector = build_vision_projector(baseline_config)
+
             self.vision_tower.image_processor = {}
             self.vision_tower.image_processor['panoptic'] = COCOPanopticNewBaselineDatasetMapper(self.cfg)
             self.vision_tower.image_processor['instance'] = COCOInstanceNewBaselineDatasetMapper(self.cfg)
@@ -1107,7 +1121,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 # Deformable模块的第二个图像特征token
                 if img1_deform_feature is not None:
                     cur_new_input_embeds.append(img1_deform_feature)
-                    print("img1_deform_feature appended, shape:", img1_deform_feature.shape)
+                    #print("img1_deform_feature appended, shape:", img1_deform_feature.shape)
                     cur_new_seg_query_mask.append(torch.zeros(img1_deform_feature.shape[0]))
                     if class_name_embedding_indices is not None:
                         cur_class_name_embedding_indices.append(
@@ -1217,16 +1231,22 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 if enable_region_mask:
                     cur_new_region_embedding_mask.append(region_embedding_mask[:chunk_len])
 
+            # --- 下面是改动的部分 ---
             input_id = input_id[chunk_len:]
             seg_query_mask = seg_query_mask[chunk_len:]
-            if class_name_embedding_indices is not None:
-                class_name_embedding_indices = class_name_embedding_indices[chunk_len:]
-            if refer_embedding_indices is not None:
-                refer_embedding_indices = refer_embedding_indices[chunk_len:]
             if label is not None:
                 label = label[chunk_len:]
-            if enable_region_mask:
-                region_embedding_mask = region_embedding_mask[chunk_len:]
+
+            # 检查是否为新插入的 token
+            is_inserted_token = (chunk_len == 1) and (chunk[0] == IMAGE_DEFORM_TOKEN_INDEX or chunk[0] == IMAGE1_DEFORM_TOKEN_INDEX)
+
+            if not is_inserted_token:
+                if class_name_embedding_indices is not None:
+                    class_name_embedding_indices = class_name_embedding_indices[chunk_len:]
+                if refer_embedding_indices is not None:
+                    refer_embedding_indices = refer_embedding_indices[chunk_len:]
+                if enable_region_mask:
+                    region_embedding_mask = region_embedding_mask[chunk_len:]
 
         cur_new_input_embeds = [x.to(device=self.device) for x in cur_new_input_embeds]
         cur_new_input_embeds = torch.cat(cur_new_input_embeds, dim=0)
@@ -1863,12 +1883,12 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     (attention_mask.shape[0], pad_len), True,
                     dtype=attention_mask.dtype, device=attention_mask.device)
                 attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
-                if new_region_embedding_masks is not None:
-                    # pad region masks on the left to align with new_input_embeds
-                    left_pad_region = torch.zeros((new_region_embedding_masks.shape[0], pad_len),
-                                                  dtype=new_region_embedding_masks.dtype,
-                                                  device=new_region_embedding_masks.device)
-                    new_region_embedding_masks = torch.cat((left_pad_region, new_region_embedding_masks), dim=1)
+                # if new_region_embedding_masks is not None:
+                #     # pad region masks on the left to align with new_input_embeds
+                #     left_pad_region = torch.zeros((new_region_embedding_masks.shape[0], pad_len),
+                #                                   dtype=new_region_embedding_masks.dtype,
+                #                                   device=new_region_embedding_masks.device)
+                #     new_region_embedding_masks = torch.cat((left_pad_region, new_region_embedding_masks), dim=1)
 
                 if attention_mask.shape != new_input_embeds.shape[:2]:
                     try:
@@ -2452,9 +2472,16 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         else:
             instances = None
             
+        # 从 seg_info 中提取 dataset_type
+        dataset_type = None
+        if seg_info is not None and len(seg_info) > 0 and 'dataset_type' in seg_info[0]:
+            dataset_type = [item['dataset_type'] for item in seg_info]
+        
+        # 将 dataset_type 传递给 prepare_inputs_labels_for_multimodal
         input_ids, attention_mask, past_key_values, inputs_embeds, labels, seg_query_mask, class_name_embedding_indices, region_embedding_masks, refer_embedding_indices = self.prepare_inputs_labels_for_multimodal(
                 input_ids, attention_mask, past_key_values, labels, images, images1, class_name_embedding_indices,
-                class_name_ids, cls_indices, instances, token_refer_id, refer_embedding_indices)
+                class_name_ids, cls_indices, instances, token_refer_id, refer_embedding_indices, 
+                dataset_type=dataset_type)  
 
         outputs = self.model(
             input_ids=input_ids,

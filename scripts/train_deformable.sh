@@ -13,12 +13,12 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:1024
 # 使用deepspeed进行分布式训练
 # --include: 指定使用的GPU节点，格式为 localhost:gpu_id1,gpu_id2,...
 # --master_port: 主节点端口号，避免冲突
-deepspeed --include localhost:2,3 --master_port 29501 psalm/train/train.py \
+deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --deepspeed ./scripts/zero2.json \
     --model_name_or_path "/home/lipeilang/projects/PSALM_new/PSALM/phi-1_5_dev" \
     --version "llava_phi" \
-    --region_json_path "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full_withproblem/train/region_cleaned.json" \
-    --region_image_folder "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full_withproblem/train/JPEGImages" \
+    --region_json_path "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full/train/region_cleaned.json" \
+    --region_image_folder "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full/train/JPEGImages" \
     --region_cross_json_path "/nfs-data1/public/SIOR/Cross_interactive_train.json" \
     --region_cross_image_folder "/nfs-data1/public/SIOR/images" \
     --panoptic_json_path "/path/to/coco" \
@@ -42,14 +42,14 @@ deepspeed --include localhost:2,3 --master_port 29501 psalm/train/train.py \
     --projector_outdim 2048 \
     --swin_type 'base' \
     --fp16 True \
-    --output_dir ./output/checkpoint/PSALM_deformable \
+    --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_deformable \
     --num_train_epochs 10 \
-    --per_device_train_batch_size 4 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 700 \
+    --save_steps 1500 \
     --save_total_limit 20 \
     --learning_rate 5e-6 \
     --weight_decay 0. \
