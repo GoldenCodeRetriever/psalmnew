@@ -1456,7 +1456,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features)
+                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
                     
                     split_sizes = [image.shape[0] for image in images]
                     baseline_features = torch.split(baseline_features, split_sizes, dim=0)
@@ -1484,7 +1484,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features)
+                    deformable_features = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
                     
                     # 保持batch维度，不flatten，在batch循环中处理
                     image_features = baseline_features  # (B, H*W, hidden_dim)
@@ -1510,7 +1510,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list1[2],
                         'res5': multi_scale_features_list1[3],
                     }
-                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1)
+                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
                     print("deformable_features1, shape:", deformable_features1.shape)
                     
                     split_sizes1 = [img.shape[0] for img in image1]
@@ -1539,7 +1539,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list1[2],
                         'res5': multi_scale_features_list1[3],
                     }
-                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1)
+                    deformable_features1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
                     print("deformable_features1, shape:", deformable_features1.shape)
                     
                     # 保持batch维度，不flatten

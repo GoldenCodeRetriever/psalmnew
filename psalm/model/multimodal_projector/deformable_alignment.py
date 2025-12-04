@@ -128,6 +128,50 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
         reference_points = torch.stack(reference_points_list, dim=0).unsqueeze(0)
         return reference_points
 
+
+    def get_proposal_based_reference_points(self, query_embed, feature_flatten, spatial_shape):
+        """
+        [新增] 基于相关性图生成动态参考点 (Proposal-based Reference Points)
+        适用于跨图分割等空间不对应的任务。
+        
+        Args:
+            query_embed: (B, N_q, C) 投影后的查询特征
+            feature_flatten: (B, L, C) 投影后的某一尺度特征图 (通常取最高层级 res5)
+            spatial_shape: (H, W) 该层级特征图的空间形状
+            
+        Returns:
+            reference_points: (B, N_q, 1, 2) 归一化坐标 [0, 1]
+        """
+        B, N_q, C = query_embed.shape
+        H, W = spatial_shape
+        
+        # 1. 计算相似度矩阵 (Cosine Similarity)
+        # 对 Query 和 Feature 进行归一化，使计算结果为余弦相似度，训练更稳定
+        q_norm = F.normalize(query_embed, p=2, dim=-1)      # (B, N_q, C)
+        f_norm = F.normalize(feature_flatten, p=2, dim=-1)  # (B, HW, C)
+        
+        # 矩阵乘法: (B, N_q, C) @ (B, C, HW) -> (B, N_q, HW)
+        similarity = torch.bmm(q_norm, f_norm.transpose(1, 2))
+        
+        # 2. 找到响应最大的位置 (Argmax)
+        # 这一步不需要梯度，我们只需要坐标
+        max_indices = torch.argmax(similarity, dim=-1) # (B, N_q)
+        
+        # 3. 将一维索引转换为归一化坐标 (x, y)
+        y_indices = max_indices // W
+        x_indices = max_indices % W
+        
+        # 加 0.5 取像素中心，并归一化到 [0, 1]
+        ref_x = (x_indices.float() + 0.5) / W
+        ref_y = (y_indices.float() + 0.5) / H
+        
+        # 堆叠坐标: (B, N_q, 2)
+        ref_points = torch.stack([ref_x, ref_y], dim=-1)
+        
+        # 扩展维度以匹配后续 repeat 操作: (B, N_q, 1, 2)
+        return ref_points.unsqueeze(2)
+
+
     def forward(
         self, 
         queries,                    # (B, N_q, query_dim) 查询特征
@@ -219,10 +263,47 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
             level_start_index, dtype=torch.long, device=device
         )  # (n_levels,)
         
-        # 生成参考点：(1, n_levels, 2) -> (1, 1, n_levels, 2)
-        reference_points = self.get_reference_points(spatial_shapes, device).unsqueeze(1)
-        # 扩展到 batch 和 query 维度：(B, N_q, n_levels, 2)
-        reference_points = reference_points.expand(B, N_q, -1, -1)
+        if task_type == 'cross_image':
+            # --- [DEBUG] 打印标志，确认进入了跨图分支 ---
+            # 为了防止刷屏，只在 rank 0 或者偶尔打印，这里简单起见每次都打
+            # 建议在确认生效后注释掉
+            if torch.rand(1).item() < 0.05: # 5% 的概率打印，防止日志爆炸
+                print(f"\n[DEBUG] >>> Entering Cross-Image Alignment Branch! Task: {task_type}")
+
+            last_lvl_feat = value_list[-1]
+            last_lvl_shape = spatial_shapes[-1]
+            
+            # 计算最佳匹配位置
+            ref_points_prop = self.get_proposal_based_reference_points(
+                query, last_lvl_feat, last_lvl_shape
+            )
+            
+            # --- [DEBUG] 检查生成的坐标是否合理 ---
+            if torch.rand(1).item() < 0.05:
+                # 打印第一个 Batch 的第一个 Query 的坐标
+                sample_pt = ref_points_prop[0, 0, 0].detach().cpu().numpy()
+                print(f"[DEBUG] Spatial Shape (res5): {last_lvl_shape}")
+                print(f"[DEBUG] Sample Ref Point (Normalized): x={sample_pt[0]:.4f}, y={sample_pt[1]:.4f}")
+                # 检查是否都在 [0, 1] 之间
+                print(f"[DEBUG] Ref Point Range: min={ref_points_prop.min().item():.4f}, max={ref_points_prop.max().item():.4f}")
+                
+                # 如果全是 0.5，说明可能是初始状态或者哪里算错了
+                if (ref_points_prop == 0.5).all():
+                    print("[WARNING] !!! All Reference Points are 0.5 (Center). Check Similarity Calculation !!!")
+                else:
+                    print("[DEBUG] >>> Dynamic Reference Points generated successfully.")
+
+            # (B, N_q, 1, 2) -> (B, N_q, n_levels, 2)
+            reference_points = ref_points_prop.repeat(1, 1, self.n_levels, 1)
+            
+        else:
+            # 策略 A: 默认中心点 (Default Center)
+            # 适用于 Referring/Interactive 等任务，或者作为兜底
+            print("WRONG!!!")
+            # 生成参考点：(1, n_levels, 2) -> (1, 1, n_levels, 2)
+            reference_points = self.get_reference_points(spatial_shapes, device).unsqueeze(1)
+            # 扩展到 batch 和 query 维度：(B, N_q, n_levels, 2)
+            reference_points = reference_points.expand(B, N_q, -1, -1)
         
         # 6. 执行 CUDA 优化的 Deformable Attention
         # MSDeformAttn.forward 参数:
