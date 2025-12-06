@@ -2530,7 +2530,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             dataset_type = [item['dataset_type'] for item in seg_info]
         
         # 将 dataset_type 传递给 prepare_inputs_labels_for_multimodal
-        input_ids, attention_mask, past_key_values, inputs_embeds, labels, seg_query_mask, class_name_embedding_indices, region_embedding_masks, refer_embedding_indices = self.prepare_inputs_labels_for_multimodal(
+        input_ids, attention_mask, past_key_values, inputs_embeds, labels, seg_query_mask, class_name_embedding_indices, region_embedding_masks, refer_embedding_indices, _ = self.prepare_inputs_labels_for_multimodal(
                 input_ids, attention_mask, past_key_values, labels, images, images1, class_name_embedding_indices,
                 class_name_ids, cls_indices, instances, token_refer_id, refer_embedding_indices, 
                 dataset_type=dataset_type)  
@@ -2595,10 +2595,11 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         )
         del mask_outputs
         processed_results = []
+        batch_size = len(seg_info)
         if SEG_cls_results is None:
-            SEG_cls_results = [None]
+            SEG_cls_results = [None] * batch_size
         if class_name_cls_results is None:
-            class_name_cls_results = [None]
+            class_name_cls_results = [None] * batch_size
             
         for _seg_info, SEG_cls_result, class_name_cls_result, mask_pred_result, input_per_image, image_size in zip(
                 seg_info, SEG_cls_results, class_name_cls_results, mask_pred_results, seg_info, images.image_sizes
@@ -2655,11 +2656,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 processed_results[-1]["instances"] = instance_r
                 processed_results[-1]["gt"] = gt_result
 
-
-
-
-
-            return processed_results
+        return processed_results
 
     def generate_gaussian_heatmap(self, image_size, feature_size, instances, sigma=2.0):
         """
@@ -2813,10 +2810,11 @@ class PSALMForDAVISEval(PSALM):
         )
         del mask_outputs
         processed_results = []
+        batch_size = len(seg_info)
         if SEG_cls_results is None:
-            SEG_cls_results = [None]
+            SEG_cls_results = [None] * batch_size
         if class_name_cls_results is None:
-            class_name_cls_results = [None]
+            class_name_cls_results = [None] * batch_size
         for _seg_info, SEG_cls_result, class_name_cls_result, mask_pred_result, input_per_image, image_size in zip(
                 seg_info, SEG_cls_results, class_name_cls_results, mask_pred_results, seg_info, images.image_sizes
         ):
@@ -2875,11 +2873,8 @@ class PSALMForDAVISEval(PSALM):
                 processed_results[-1]["instances"] = instance_r
                 processed_results[-1]["gt"] = gt_result
 
+        return processed_results
 
-
-
-
-            return processed_results
     def prepare_inputs_labels_for_multimodal(
             self, input_ids, attention_mask, past_key_values, labels, images, vp_images=None, class_name_embedding_indices=None,
             class_name_ids=None, cls_indices=None, instances=None, token_refer_id=None, refer_embedding_indices=None
@@ -3189,10 +3184,11 @@ class PSALMForDAVISEval(PSALM):
         )
         del mask_outputs
         processed_results = []
+        batch_size = len(seg_info)
         if SEG_cls_results is None:
-            SEG_cls_results = [None]
+            SEG_cls_results = [None] * batch_size
         if class_name_cls_results is None:
-            class_name_cls_results = [None]
+            class_name_cls_results = [None] * batch_size
         for _seg_info, SEG_cls_result, class_name_cls_result, mask_pred_result, input_per_image, image_size in zip(
                 seg_info, SEG_cls_results, class_name_cls_results, mask_pred_results, seg_info, images.image_sizes
         ):
@@ -3247,7 +3243,7 @@ class PSALMForDAVISEval(PSALM):
                 processed_results[-1]["instances"] = instance_r
                 processed_results[-1]["gt"] = gt_result
 
-            return processed_results
+        return processed_results
 
 
 AutoConfig.register("llava_phi", LlavaConfig)

@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
 import torch
 from enum import Enum
@@ -112,17 +112,17 @@ class DataArguments:
     data_path: str = field(default=None, metadata={"help": "Path to the training data."})
     lazy_preprocess: bool = False
     is_multimodal: bool = False
-    region_cross_image_folder: Optional[str] = field(default='/nfs-data1/zhangkunquan/SIOR/images')
-    model_path: Optional[str] = field(default="/home/zhangkunquan/code/PSALM/output/weight/PSALM")
+    region_cross_image_folder: Optional[str] = field(default='/nfs-data1/public/SIOR/images')
+    model_path: Optional[str] = field(default="/nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable/checkpoint-15440")
     mask_config: Optional[str] = field(default="./psalm/mask_config/maskformer2_swin_base_384_bs16_50ep.yaml")
     image_aspect_ratio: str = 'square'
     image_grid_pinpoints: Optional[str] = field(default=None)
-    json_path: str = '/nfs-data1/zhangkunquan/SIOR/test_interactivate/interactive_category_1.json'
+    json_path: str = '/nfs-data1/public/12.03/interactive_category_17.json'
     model_map_name: str = 'psalm'
     version: str = 'llava_phi'  
     output_dir: str = './output/interactive_segmentation'
     segmentation: bool = True
-    eval_batch_size: int = 4  
+    eval_batch_size: int = 1  
     dataloader_num_workers: int = 8
     seg_task: Optional[str] = field(default="region")
     region_mask_type: Optional[str] = field(default="point_visual_prompt_mask") #'point_visual_prompt_mask||box_visual_prompt_mask||scribble_visual_prompt_mask||'
@@ -250,6 +250,12 @@ def evaluation():
     union_meter = AverageMeter("Union", ":6.3f", Summary.SUM)
     acc_iou_meter = AverageMeter("gIoU", ":6.3f", Summary.SUM)
 
+
+    vis_dir = os.path.join(data_args.output_dir, f'vis_{save_suffix}')
+    os.makedirs(vis_dir, exist_ok=True)
+    print(f'Visualization results will be saved to: {vis_dir}')
+
+
     with torch.no_grad():
         for batch_idx, inputs in tqdm(enumerate(eval_dataloader), total=len(eval_dataloader)):
     
@@ -290,12 +296,59 @@ def evaluation():
                     seg_info=inputs['seg_info'],
                     labels=inputs['labels']
                 )
-            except:
-                print(f'Batch {batch_idx} skipped: can not find region masks')
+            except Exception as e:
+                print(f'Batch {batch_idx} skipped. Error: {e}')
                 continue
+
+            print(f"Batch outputs length: {len(outputs)}")
 
             cur_res = parse_outputs(outputs, gt_masks_batch)
             pred, gt_mask = compute_metric(intersection_meter, union_meter, acc_iou_meter, cur_res)
+
+
+            for i in range(len(sample_indices)):
+                sample_idx = sample_indices[i]
+                cur_pred_mask = pred[i] # 预测的Mask (H, W) 0/1
+                
+                # 获取原图路径 (Image1是目标图)
+                img_info = gt_data[sample_idx]['image1_info']
+                img_name = img_info['image']
+                
+                # 拼接完整路径
+                if data_args.region_cross_image_folder:
+                    img_path = os.path.join(data_args.region_cross_image_folder, img_name)
+                else:
+                    img_path = img_name
+                
+                # 读取图像
+                img = cv2.imread(img_path)
+                if img is None:
+                    # 尝试不加前缀读取，防止路径拼接错误
+                    img = cv2.imread(img_name)
+                
+                if img is not None:
+                    # 确保 Mask 尺寸与图像一致 (模型内部已做postprocess，理论上一致)
+                    if img.shape[:2] != cur_pred_mask.shape:
+                        cur_pred_mask = cv2.resize(cur_pred_mask.astype(np.uint8), (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    
+                    # 绘制红色Mask叠加
+                    overlay = img.copy()
+                    # BGR格式: 红色 (0, 0, 255)
+                    overlay[cur_pred_mask > 0] = np.array([0, 0, 255], dtype=np.uint8)
+                    
+                    # 混合图片 (0.5透明度)
+                    alpha = 0.5
+                    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+                    
+                    # 绘制Mask轮廓 (更清晰)
+                    contours, _ = cv2.findContours(cur_pred_mask.astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(img, contours, -1, (0, 0, 255), 2)
+                    
+                    # 保存图片
+                    save_name = f"{os.path.splitext(os.path.basename(img_name))[0]}_{sample_idx}_pred.jpg"
+                    cv2.imwrite(os.path.join(vis_dir, save_name), img)
+                else:
+                    print(f"[Warning] Could not read image: {img_path}")
 
 
             for i in range(len(sample_indices)):
