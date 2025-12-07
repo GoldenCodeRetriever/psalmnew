@@ -2600,9 +2600,11 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             SEG_cls_results = [None] * batch_size
         if class_name_cls_results is None:
             class_name_cls_results = [None] * batch_size
+        if region_cls_results is None:
+            region_cls_results = [None] * batch_size
             
-        for _seg_info, SEG_cls_result, class_name_cls_result, mask_pred_result, input_per_image, image_size in zip(
-                seg_info, SEG_cls_results, class_name_cls_results, mask_pred_results, seg_info, images.image_sizes
+        for _seg_info, SEG_cls_result, class_name_cls_result, mask_pred_result, region_cls_result, input_per_image, image_size in zip(
+                seg_info, SEG_cls_results, class_name_cls_results, mask_pred_results, region_cls_results, seg_info, images.image_sizes
         ):
             height = input_per_image.get("height", image_size[0])
             width = input_per_image.get("width", image_size[1])
@@ -2650,8 +2652,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 gt_result = retry_if_cuda_oom(sem_seg_postprocess)(
                     gt, [original_height, original_width], height, width
                 )
-                region_cls_results = region_cls_results[0].to(mask_pred_result)
-                instance_r = retry_if_cuda_oom(self.region_inference)(region_cls_results.float(),
+                current_region_cls = region_cls_result.to(mask_pred_result)
+                instance_r = retry_if_cuda_oom(self.region_inference)(current_region_cls.float(),
                                                                             mask_pred_result.float())
                 processed_results[-1]["instances"] = instance_r
                 processed_results[-1]["gt"] = gt_result

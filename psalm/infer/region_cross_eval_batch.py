@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
 import torch
 from enum import Enum
@@ -117,12 +117,12 @@ class DataArguments:
     mask_config: Optional[str] = field(default="./psalm/mask_config/maskformer2_swin_base_384_bs16_50ep.yaml")
     image_aspect_ratio: str = 'square'
     image_grid_pinpoints: Optional[str] = field(default=None)
-    json_path: str = '/nfs-data1/public/12.03/interactive_category_17.json'
+    json_path: str = '/nfs-data1/public/12.03/interactive_category_14.json'
     model_map_name: str = 'psalm'
     version: str = 'llava_phi'  
     output_dir: str = './output/interactive_segmentation'
     segmentation: bool = True
-    eval_batch_size: int = 1  
+    eval_batch_size: int = 4  
     dataloader_num_workers: int = 8
     seg_task: Optional[str] = field(default="region")
     region_mask_type: Optional[str] = field(default="point_visual_prompt_mask") #'point_visual_prompt_mask||box_visual_prompt_mask||scribble_visual_prompt_mask||'
