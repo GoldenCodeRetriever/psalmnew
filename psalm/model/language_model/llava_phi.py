@@ -33,6 +33,27 @@ from ..datasets_mapper.coco_panoptic_mapper import COCOPanopticNewBaselineDatase
 from ..datasets_mapper.coco_semantic_mapper import COCOSemanticNewBaselineDatasetMapper
 from psalm.model.mask_decoder.mask_criterion.pretrain_criterion import PSALM_criterion, hungarian_matcher_PSALM
 from transformers import PhiModel, PhiForCausalLM, PhiConfig
+
+def dice_loss_func(inputs, targets, smooth=1):
+        """
+        inputs: (B, 1, H, W) 预测热图 (logits), 未经 sigmoid
+        targets: (B, 1, H, W) GT 热图 (0~1)
+        """
+        # 1. 激活与展平
+        inputs = inputs.sigmoid()
+        inputs = inputs.flatten(1)
+        targets = targets.flatten(1)
+        
+        # 2. 计算 Intersection (分子) 和 Union (分母)
+        numerator = 2 * (inputs * targets).sum(1)
+        denominator = inputs.sum(1) + targets.sum(1)
+        
+        # 3. 计算 Dice Loss
+        loss = 1 - (numerator + smooth) / (denominator + smooth)
+        
+        # 4. [关键修改] 取平均，返回标量
+        return loss.mean()
+
 class LlavaConfig(PhiConfig):
     model_type = "llava_phi"
 
@@ -2263,7 +2284,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     
                     # 4. 计算 MSE Loss
                     # 这里的 300.0 是权重，可以根据 loss 大小调整
-                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 500.0
+                    loss_proposal = dice_loss_func(aux_similarity_maps.float(), gt_heatmap.float()) * 12.0
                 
         
                 loss_mask = 0.0
@@ -2487,6 +2508,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         seg_query = torch.stack(seg_query_list, dim=0)
 
         return seg_query
+
+
+
     def eval_seg(
             self,
             input_ids: torch.LongTensor = None,
@@ -2660,58 +2684,111 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
 
         return processed_results
 
-    def generate_gaussian_heatmap(self, image_size, feature_size, instances, sigma=2.0):
+    # def generate_gaussian_heatmap(self, image_size, feature_size, instances):
+    #     """
+    #     生成高斯热图 GT
+    #     Args:
+    #         image_size: (H_img, W_img) 原始图片大小
+    #         feature_size: (H_feat, W_feat) 特征图大小 (32, 32)
+    #         instances: Detectron2 Instances 对象列表，包含 gt_masks
+    #     Returns:
+    #         heatmap: [B, 1, H_feat, W_feat]
+    #     """
+    #     B = len(instances)
+    #     H, W = feature_size
+    #     device = instances[0].gt_classes.device
+    #     gt_heatmap = torch.zeros(B, 1, H, W, device=device)
+        
+    #     for b_idx, inst in enumerate(instances):
+    #         if len(inst) == 0: continue
+            
+    #         # 获取当前图片所有 GT 的中心点
+    #         # 假设 inst.gt_masks 是 BitMasks 或 Tensor
+    #         if hasattr(inst, 'gt_masks'):
+    #             if isinstance(inst.gt_masks, torch.Tensor):
+    #                 masks = inst.gt_masks
+    #             else: # BitMasks
+    #                 masks = inst.gt_masks.tensor
+                
+    #             # 计算重心
+    #             # masks: [N, H_img, W_img]
+    #             for mask in masks:
+    #                 # 简单粗暴的方法：nonzero 取平均
+    #                 # 注意：这里 mask 是原图大小，需要缩放到 feature map 大小
+    #                 y_indices, x_indices = torch.where(mask)
+    #                 if len(y_indices) == 0: continue
+                    
+    #                 center_y = y_indices.float().mean()
+    #                 center_x = x_indices.float().mean()
+
+    #                 sigma = max((feat_h_obj + feat_w_obj) / 2.0 / 3.0, 1.5)
+                    
+    #                 # 映射到 Feature Map 坐标
+    #                 feat_y = int(center_y / image_size[0] * H)
+    #                 feat_x = int(center_x / image_size[1] * W)
+                    
+    #                 # 限制范围
+    #                 feat_y = min(max(feat_y, 0), H - 1)
+    #                 feat_x = min(max(feat_x, 0), W - 1)
+                    
+    #                 # 在 (feat_x, feat_y) 处生成高斯点
+    #                 # 创建网格
+    #                 y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device))
+    #                 gaussian = torch.exp(-((x_grid - feat_x)**2 + (y_grid - feat_y)**2) / (2 * sigma**2))
+                    
+    #                 # 叠加到 Heatmap (取最大值，处理重叠)
+    #                 gt_heatmap[b_idx, 0] = torch.maximum(gt_heatmap[b_idx, 0], gaussian)
+                    
+    #     return gt_heatmap
+
+
+    def generate_gaussian_heatmap(self, image_size, feature_size, instances, min_overlap=0.7):
         """
-        生成高斯热图 GT
-        Args:
-            image_size: (H_img, W_img) 原始图片大小
-            feature_size: (H_feat, W_feat) 特征图大小 (32, 32)
-            instances: Detectron2 Instances 对象列表，包含 gt_masks
-        Returns:
-            heatmap: [B, 1, H_feat, W_feat]
+        [修改版] 生成下采样 Mask 热图 (Direct Mask Supervision)
+        不再生成高斯圆，而是直接将 GT Mask 下采样作为监督信号。
+        这能让模型学会激活物体的整个区域（包括边缘），彻底解决大物体分割空洞问题。
         """
         B = len(instances)
         H, W = feature_size
-        device = instances[0].gt_classes.device
+        # 获取 device，如果 instances 为空则使用 self.device
+        device = instances[0].gt_classes.device if len(instances) > 0 else self.device
+        
+        # 初始化热图 [B, 1, H, W]
         gt_heatmap = torch.zeros(B, 1, H, W, device=device)
         
         for b_idx, inst in enumerate(instances):
             if len(inst) == 0: continue
             
-            # 获取当前图片所有 GT 的中心点
-            # 假设 inst.gt_masks 是 BitMasks 或 Tensor
             if hasattr(inst, 'gt_masks'):
+                # 获取 mask tensor
                 if isinstance(inst.gt_masks, torch.Tensor):
                     masks = inst.gt_masks
-                else: # BitMasks
+                else: 
+                    # BitMasks 情况
                     masks = inst.gt_masks.tensor
                 
-                # 计算重心
-                # masks: [N, H_img, W_img]
-                for mask in masks:
-                    # 简单粗暴的方法：nonzero 取平均
-                    # 注意：这里 mask 是原图大小，需要缩放到 feature map 大小
-                    y_indices, x_indices = torch.where(mask)
-                    if len(y_indices) == 0: continue
-                    
-                    center_y = y_indices.float().mean()
-                    center_x = x_indices.float().mean()
-                    
-                    # 映射到 Feature Map 坐标
-                    feat_y = int(center_y / image_size[0] * H)
-                    feat_x = int(center_x / image_size[1] * W)
-                    
-                    # 限制范围
-                    feat_y = min(max(feat_y, 0), H - 1)
-                    feat_x = min(max(feat_x, 0), W - 1)
-                    
-                    # 在 (feat_x, feat_y) 处生成高斯点
-                    # 创建网格
-                    y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device))
-                    gaussian = torch.exp(-((x_grid - feat_x)**2 + (y_grid - feat_y)**2) / (2 * sigma**2))
-                    
-                    # 叠加到 Heatmap (取最大值，处理重叠)
-                    gt_heatmap[b_idx, 0] = torch.maximum(gt_heatmap[b_idx, 0], gaussian)
+                if masks.shape[0] == 0: continue
+
+                # 1. [关键步骤] 合并所有实例 Mask
+                # masks: [N, H_img, W_img] -> combined: [H_img, W_img]
+                # 使用 any() 取并集：只要某个像素属于任意一个实例，就标记为 1
+                combined_mask = masks.any(dim=0).float()
+                
+                # 增加维度以适配 interpolate: [1, 1, H_img, W_img]
+                combined_mask = combined_mask.unsqueeze(0).unsqueeze(0)
+                
+                # 2. [关键步骤] 双线性插值下采样
+                # 直接把原图大小的 Mask 缩放到特征图大小 (32x32)
+                # mode='bilinear' 会产生 [0, 1] 之间的软标签，利于训练
+                mask_resized = F.interpolate(
+                    combined_mask, 
+                    size=(H, W), 
+                    mode='bilinear', 
+                    align_corners=False
+                ) # 输出 shape: [1, 1, H, W]
+                
+                # 3. 赋值给 Batch 热图
+                gt_heatmap[b_idx, 0] = mask_resized.squeeze()
                     
         return gt_heatmap
 
