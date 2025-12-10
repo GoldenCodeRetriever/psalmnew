@@ -822,9 +822,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
     
     def create_deformable_queries(self, task_type, batch_size, device, 
                                   class_name_embedding=None, 
-                                  refer_embedding_indices=None,
-                                  hidden_states=None,
-                                  region_feature_list=None):
+                                  region_feature_list=None,
+                                  refer_embeddings=None):
         """
         为Deformable Cross-Attention生成查询特征。
         
@@ -840,9 +839,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             batch_size: int, 批量大小
             device: torch.device, 设备
             class_name_embedding: (B, num_classes, hidden_dim), 可选，类别名称嵌入
-            refer_embedding_indices: torch.Tensor, 可选，指代索引掩码
-            hidden_states: torch.Tensor, 可选，LLM隐藏状态
             region_feature_list: list, 可选，区域特征列表
+            refer_embeddings: (B, 1, hidden_dim), 可选，指代词的嵌入特征
         
         Returns:
             queries_z_q: (B, N_q, query_dim), 查询特征
@@ -873,28 +871,18 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         
         # 方案2：Referring分割 - 使用指代词嵌入作为查询
         elif 'referring' in task_type:
-            if refer_embedding_indices is not None and hidden_states is not None:
-                # 从hidden_states中提取指代相关特征
-                refer_embedding_list = []
-                for b_idx, indices in enumerate(refer_embedding_indices):
-                    if indices is not None and (indices >= 0).any():
-                        # 提取指代token对应的隐藏状态
-                        refer_mask = indices >= 0
-                        refer_hidden = hidden_states[b_idx][refer_mask]  # (num_refer_tokens, hidden_dim)
-                        # 池化得到单个查询向量
-                        refer_query = refer_hidden.mean(dim=0, keepdim=True)  # (1, hidden_dim)
-                    else:
-                        # 无指代信息，使用零向量
-                        refer_query = torch.zeros(1, hidden_states.shape[-1], device=device)
-                    refer_embedding_list.append(refer_query)
-                queries_z_q = torch.cat(refer_embedding_list, dim=0)  # (B, hidden_dim)
-                queries_z_q = queries_z_q.unsqueeze(1)  # (B, 1, hidden_dim)
+            if refer_embeddings is not None:
+                queries_z_q = refer_embeddings
                 source = 'refer'
-                # 投影到query_dim
+                # 确保维度匹配
+                if queries_z_q.dim() == 2: # (B, C) -> (B, 1, C)
+                    queries_z_q = queries_z_q.unsqueeze(1)
+                
                 if queries_z_q.shape[-1] != query_dim:
                     proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
                     queries_z_q = proj_layer(queries_z_q)
-            else:
+            
+            else:   
                 # 后备方案
                 queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
                 source = 'seg_query'
@@ -1329,15 +1317,33 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             queries_z_q_source = 'N/A'
             queries_z_q_image1_source = 'N/A'
 
+            refer_embeddings_batch = None
+            if 'referring' in task_type and token_refer_id is not None:
+                # token_refer_id 是一个列表，包含每个样本的指代词 Token IDs
+                ref_embeds_list = []
+                for t_ids in token_refer_id:
+                    if t_ids is not None:
+                        # 1. 获取 Embedding: [Len, Hidden_Dim]
+                        # 注意：需要移到 device
+                        cur_embeds = self.get_model().embed_tokens(t_ids.to(device))
+                        # 2. 平均池化得到 Sentence Embedding: [1, Hidden_Dim]
+                        pooled_embed = cur_embeds.mean(dim=0, keepdim=True)
+                        ref_embeds_list.append(pooled_embed)
+                    else:
+                        # 空数据处理
+                        ref_embeds_list.append(torch.zeros(1, self.config.hidden_size, device=device))
+                
+                if len(ref_embeds_list) > 0:
+                    refer_embeddings_batch = torch.stack(ref_embeds_list, dim=0) # [B, 1, C]
+
             # 为images创建查询
             queries_z_q, queries_z_q_source = self.create_deformable_queries(
                 task_type=task_type,
                 batch_size=batch_size,
                 device=device,
                 class_name_embedding=None,  # 将在后续处理中填充
-                refer_embedding_indices=refer_embedding_indices,
-                hidden_states=None,  # 此时hidden_states不可用，需要后续处理
-                region_feature_list=None  # 此时region_feature_list也不可用
+                region_feature_list=None,  # 此时region_feature_list也不可用
+                refer_embeddings=refer_embeddings_batch
             )
             
             # 为image1创建查询（非跨图任务的双图场景）
@@ -1347,8 +1353,6 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     batch_size=batch_size,
                     device=device,
                     class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
                     region_feature_list=None
                 )
             else:
@@ -1407,8 +1411,6 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     batch_size=batch_size,
                     device=device,
                     class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
                     region_feature_list=prompt_region_features  # 使用提示图的区域特征
                 )
             else:
@@ -1420,8 +1422,6 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     batch_size=batch_size,
                     device=device,
                     class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
                     region_feature_list=None
                 )
             
@@ -1458,8 +1458,11 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
-                    
+                    deformable_features, similarity_map = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
+                    if similarity_map is not None:
+                        aux_similarity_maps.append(similarity_map)
+                    print("deformable_features, shape:", deformable_features.shape)
+                        
                     split_sizes = [image.shape[0] for image in images]
                     baseline_features = torch.split(baseline_features, split_sizes, dim=0)
                     deformable_features = torch.split(deformable_features, split_sizes, dim=0)
@@ -1486,8 +1489,10 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                         'res4': multi_scale_features_list[2],
                         'res5': multi_scale_features_list[3],
                     }
-                    deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
-                    
+                    deformable_features, similarity_map = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
+                    if similarity_map is not None:
+                        aux_similarity_maps.append(similarity_map)
+                    print("deformable_features, shape:", deformable_features.shape)
                     # 保持batch维度，不flatten，在batch循环中处理
                     image_features = baseline_features  # (B, H*W, hidden_dim)
                     image_deform_features = deformable_features  # (B, N_q, hidden_dim)
@@ -1602,65 +1607,103 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
             region_embedding_masks = None
 
 
-        # 如果是deformable模式，需要在输入序列中添加新的token
+        # 找到这个位置（大约在 1730 行附近）
         if is_deformable_mode:
-            # 对于跨图任务：只在IMAGE1_TOKEN之后插入IMAGE1_DEFORM_TOKEN（目标图）
-            # 对于其他任务：在IMAGE_TOKEN之后插入IMAGE_DEFORM_TOKEN
             new_input_ids_list = []
             new_labels_list = [] if labels is not None else None
+            # [修复 1] 初始化 mask 列表
+            new_attention_mask_list = [] if attention_mask is not None else None
+            
             for batch_idx, cur_input_ids in enumerate(input_ids):
                 cur_new_input_ids = []
                 cur_new_labels = [] if labels is not None else None
+                
+                # [修复 2] 获取当前样本的 attention_mask
+                cur_attention_mask = attention_mask[batch_idx] if attention_mask is not None else None
+                cur_new_attention_mask = [] if cur_attention_mask is not None else None
+                
                 i = 0
                 while i < len(cur_input_ids):
                     cur_new_input_ids.append(cur_input_ids[i])
                     if labels is not None:
                         cur_new_labels.append(labels[batch_idx][i])
                     
-                    # 对于跨图任务，提示图不需要deformable token
-                    if is_cross_image_task and image1 is not None:
-                        # 跨图任务：只在目标图（IMAGE1_TOKEN）后插入deformable token
-                        if cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE1_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
-                    else:
-                        # 非跨图任务：在IMAGE_TOKEN后插入IMAGE_DEFORM_TOKEN
-                        if cur_input_ids[i] == IMAGE_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
-                        # 如果有IMAGE1_TOKEN（非跨图的双图场景），也插入IMAGE1_DEFORM_TOKEN
-                        elif cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE1_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
+                    # [修复 3] 同步复制原 mask 的值
+                    if cur_new_attention_mask is not None:
+                        cur_new_attention_mask.append(cur_attention_mask[i])
                     
+                    # 检查是否插入 Token
+                    insert_token = False
+                    insert_val = None
+                    
+                    if is_cross_image_task and image1 is not None:
+                        if cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
+                            insert_token = True
+                            insert_val = IMAGE1_DEFORM_TOKEN_INDEX
+                    else:
+                        if cur_input_ids[i] == IMAGE_TOKEN_INDEX:
+                            insert_token = True
+                            insert_val = IMAGE_DEFORM_TOKEN_INDEX
+                        elif cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
+                            insert_token = True
+                            insert_val = IMAGE1_DEFORM_TOKEN_INDEX
+                    
+                    if insert_token:
+                        cur_new_input_ids.append(insert_val)
+                        if labels is not None:
+                            cur_new_labels.append(IGNORE_INDEX)
+                        # [修复 4: 关键!] 插入 Token 时，Mask 也要补 1 (True)
+                        if cur_new_attention_mask is not None:
+                            cur_new_attention_mask.append(True)
+                            
                     i += 1
                 
                 new_input_ids_list.append(torch.tensor(cur_new_input_ids, device=cur_input_ids.device, dtype=cur_input_ids.dtype))
                 if labels is not None:
                     new_labels_list.append(torch.tensor(cur_new_labels, device=labels.device, dtype=labels.dtype))
+                # [修复 5] 保存新的 mask
+                if new_attention_mask_list is not None:
+                    new_attention_mask_list.append(torch.tensor(cur_new_attention_mask, device=attention_mask.device, dtype=attention_mask.dtype))
             
-            # 对齐batch内的序列长度
+            # 对齐 Batch
             if len(new_input_ids_list) > 0:
                 max_len = max(len(ids) for ids in new_input_ids_list)
                 aligned_input_ids = []
                 aligned_labels = [] if labels is not None else None
-                for ids, lbls in zip(new_input_ids_list, new_labels_list if labels is not None else [None] * len(new_input_ids_list)):
+                # [修复 6] 初始化对齐列表
+                aligned_attention_masks = [] if attention_mask is not None else None
+                
+                for idx in range(len(new_input_ids_list)):
+                    ids = new_input_ids_list[idx]
                     pad_len = max_len - len(ids)
                     if pad_len > 0:
                         pad_ids = torch.full((pad_len,), IGNORE_INDEX, device=ids.device, dtype=ids.dtype)
                         ids = torch.cat([ids, pad_ids], dim=0)
-                        if labels is not None:
+                    aligned_input_ids.append(ids)
+                    
+                    if labels is not None:
+                        lbls = new_labels_list[idx]
+                        if pad_len > 0:
                             pad_lbls = torch.full((pad_len,), IGNORE_INDEX, device=lbls.device, dtype=lbls.dtype)
                             lbls = torch.cat([lbls, pad_lbls], dim=0)
-                    aligned_input_ids.append(ids)
-                    if labels is not None:
                         aligned_labels.append(lbls)
+                    
+                    # [修复 7] 对 Mask 进行 Padding (补 False)
+                    if attention_mask is not None:
+                        msk = new_attention_mask_list[idx]
+                        if pad_len > 0:
+                            pad_msk = torch.full((pad_len,), False, device=msk.device, dtype=msk.dtype)
+                            msk = torch.cat([msk, pad_msk], dim=0)
+                        aligned_attention_masks.append(msk)
+
                 input_ids = torch.stack(aligned_input_ids, dim=0)
                 if labels is not None:
                     labels = torch.stack(aligned_labels, dim=0)
+                
+                # [修复 8: 最终赋值] 更新 attention_mask
+                if attention_mask is not None:
+                    attention_mask = torch.stack(aligned_attention_masks, dim=0)
+                
                 seg_query_mask = torch.zeros_like(input_ids)
 
         new_input_embeds = []
@@ -2241,7 +2284,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 
                 # 只有在 (跨图任务) 且 (有 aux_similarity_maps) 时计算
                 # 注意：aux_similarity_maps 是我们之前修改 prepare_inputs... 返回的
-                if 'cross' in batch_dataset_type and aux_similarity_maps is not None:
+                loss_condition = ('cross' in batch_dataset_type or 'referring' in batch_dataset_type)
+                
+                if loss_condition and aux_similarity_maps is not None:
                     
                     # 1. 获取特征图尺寸 (从 similarity map 获取)
                     # aux_similarity_maps: [B, 1, H_feat, W_feat]

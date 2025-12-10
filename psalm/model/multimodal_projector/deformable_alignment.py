@@ -391,13 +391,32 @@ class MultiScaleDeformableCrossAttentionAlignment(nn.Module):
 
             
         else:
-            # 策略 A: 默认中心点 (Default Center)
-            # 适用于 Referring/Interactive 等任务，或者作为兜底
-            print("WRONG!!!")
-            # 生成参考点：(1, n_levels, 2) -> (1, 1, n_levels, 2)
-            reference_points = self.get_reference_points(spatial_shapes, device).unsqueeze(1)
-            # 扩展到 batch 和 query 维度：(B, N_q, n_levels, 2)
-            reference_points = reference_points.expand(B, N_q, -1, -1)
+            # 这里 query 是文本特征 (Text Embeddings)
+            # last_lvl_feat 是图像特征 (Image Features)
+            # 计算它们的相似度，就能知道"文本描述的物体"在哪里
+            
+            K = 10 
+            
+            last_lvl_feat = value_list[-1]
+            last_lvl_shape = spatial_shapes[-1]
+            
+            # 1. [关键] 复用同一个函数计算 Text-Image 热力图 & NMS选点
+            # 这会返回文本最关注的 K 个位置
+            topk_ref_points, similarity_map = self.get_proposal_based_reference_points(
+                query, last_lvl_feat, last_lvl_shape, K=K
+            )
+            
+            # 2. 扩展维度 (逻辑同 cross_image)
+            # query: [B, N_q, C] -> [B, N_q*K, C]
+            query_expanded = query.unsqueeze(2).repeat(1, 1, K, 1).flatten(1, 2)
+            
+            # ref_points: [B, N_q, K, 2] -> [B, N_q*K, n_levels, 2]
+            # 这里假设 N_q 是文本 token 数，通常为 1 (pooling后) 或者多个
+            ref_points_expanded = topk_ref_points.flatten(1, 2).unsqueeze(2).repeat(1, 1, self.n_levels, 1)
+            
+            # 3. 赋值
+            reference_points = ref_points_expanded
+            final_query = query_expanded
         
         # 6. 执行 CUDA 优化的 Deformable Attention
         # MSDeformAttn.forward 参数:
