@@ -753,15 +753,46 @@ class interactive_dataset(COCO_panoptic_dataset):
         self.tokenizer = tokenizer
         self.data_args = data_args
         category_ids = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
-            11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
+            35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49,
+            50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+            64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+            82, 84, 85, 86, 87, 88, 89, 90,
+            91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+            101, 102, 103, 104, 105, 106, 107, 108, 109, 110
         ]
         category_names = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
+            'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
+            'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+            'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear',
+            'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+            'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
+            'sports ball', 'kite', 'baseball bat', 'baseball glove',
+            'skateboard', 'surfboard', 'tennis racket', 'bottle',
+            'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
+            'banana', 'apple', 'sandwich', 'orange', 'broccoli',
+            'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+            'couch', 'potted plant', 'bed', 'dining table', 'toilet',
+            'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+            'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book',
+            'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush',
             'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
             'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
             'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
             'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
         ]
+        # category_ids = [
+        #     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
+        #     11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+        # ]
+        # category_names = [
+        #     'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
+        #     'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
+        #     'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
+        #     'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
+        # ]
         # category_ids = [
         #     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
         # ]
@@ -884,15 +915,46 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         self.tokenizer = tokenizer
         self.data_args = data_args
         category_ids = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
-            11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
+            35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49,
+            50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+            64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+            82, 84, 85, 86, 87, 88, 89, 90,
+            91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+            101, 102, 103, 104, 105, 106, 107, 108, 109, 110
         ]
         category_names = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
+            'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
+            'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+            'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear',
+            'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+            'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
+            'sports ball', 'kite', 'baseball bat', 'baseball glove',
+            'skateboard', 'surfboard', 'tennis racket', 'bottle',
+            'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
+            'banana', 'apple', 'sandwich', 'orange', 'broccoli',
+            'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+            'couch', 'potted plant', 'bed', 'dining table', 'toilet',
+            'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+            'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book',
+            'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush',
             'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
             'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
             'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
             'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
         ]
+        # category_ids = [
+        #     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
+        #     11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+        # ]
+        # category_names = [
+        #     'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
+        #     'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
+        #     'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
+        #     'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
+        # ]
         self.coco_id_to_cont_id = {coco_id: cont_id for cont_id, coco_id in enumerate(category_ids)}
         self.coco_class_name = category_names + ['background']
         print(f"category_ids: {category_ids}")
@@ -953,12 +1015,33 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         
         for annotation in data_dict['annotations']:
             annotation['bbox_mode'] = BoxMode.XYXY_ABS
+            
+            # 检查 ID 是否在映射表的 Key 中（原始 COCO ID）
             if annotation['category_id'] in self.coco_id_to_cont_id:
                 annotation['category_id'] = self.coco_id_to_cont_id[annotation['category_id']]
+            
+            # 检查 ID 是否已经在映射表的 Value 中（已经是连续 ID）
             elif annotation['category_id'] in self.coco_id_to_cont_id.values():
                 annotation['category_id'] = annotation['category_id']
+            
+            # 如果都不在，说明遇到了未知类别，打印调试信息
             else:
-                raise ValueError
+                print("\n" + "="*30 + " DEBUG INFO " + "="*30)
+                print(f"[ERROR] Found unknown category_id: {annotation['category_id']}")
+                
+                # 尝试打印图片信息，方便定位是哪张图
+                img_info = data.get('image_info', {})
+                print(f"[ERROR] Image ID: {img_info.get('img_id', 'Unknown')}")
+                print(f"[ERROR] Image Path: {img_info.get('file_name', 'Unknown')}") # 或者是 'file_name'
+                
+                # 打印当前的映射表信息，看看只支持哪些 ID
+                print(f"[INFO] Valid COCO IDs (Keys): {list(self.coco_id_to_cont_id.keys())}")
+                print(f"[INFO] Valid Continuous IDs (Values): {list(self.coco_id_to_cont_id.values())}")
+                print("="*72 + "\n")
+                
+                # 抛出带信息的异常，防止直接 Crash 看不到原因
+                raise ValueError(f"Category ID {annotation['category_id']} is not valid for this dataset mapping.")
+
             annotation['image_id'] = data['image_info']['img_id']
 
         for annotation in data_dict['annotations1']:
@@ -1025,16 +1108,49 @@ class instance_dataset(interactive_dataset):
         self.tokenizer = tokenizer
         self.data_args = data_args
         self.mask_format = 'polygon'
+
         category_ids = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
-            11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17,
+            18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
+            35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49,
+            50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+            64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+            82, 84, 85, 86, 87, 88, 89, 90,
+            91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+            101, 102, 103, 104, 105, 106, 107, 108, 109, 110
         ]
         category_names = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
+            'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
+            'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+            'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear',
+            'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag',
+            'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
+            'sports ball', 'kite', 'baseball bat', 'baseball glove',
+            'skateboard', 'surfboard', 'tennis racket', 'bottle',
+            'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
+            'banana', 'apple', 'sandwich', 'orange', 'broccoli',
+            'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+            'couch', 'potted plant', 'bed', 'dining table', 'toilet',
+            'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+            'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book',
+            'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush',
             'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
             'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
             'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
             'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
         ]
+
+        # category_ids = [
+        #     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
+        #     11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+        # ]
+        # category_names = [
+        #     'Airplane', 'Airport', 'Baseball field', 'Basketball court', 'Bridge', 
+        #     'Chimney', 'Dam', 'Expressway service area', 'Expressway toll station', 
+        #     'Golf field', 'Ground track field', 'Harbor', 'Overpass', 'Ship', 
+        #     'Stadium', 'Storage tank', 'Tennis court', 'Train station', 'Vehicle', 'Windmill'
+        # ]
         # coco_class_ids = [
         #     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
         # ]

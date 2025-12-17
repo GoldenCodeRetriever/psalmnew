@@ -19,11 +19,11 @@ deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --version "llava_phi" \
     --region_json_path "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full/train/region_cleaned.json" \
     --region_image_folder "/nfs-data1/public/psalm_data/RRSIS-D_split/region_full/train/JPEGImages" \
-    --region_cross_json_path "/nfs-data1/public/SIOR/Cross_interactive_train.json" \
-    --region_cross_image_folder "/nfs-data1/public/SIOR/images" \
+    --region_cross_json_path "/nfs-data1/public/test/updatedcategoryid2.0_1_6_14_17_train2.json" \
+    --region_cross_image_folder "/nfs-data1/public/test/images" \
     --panoptic_json_path "/path/to/coco" \
-    --referring_json_path "/nfs-data1/public/psalm_data/RRSIS-D_split/referring/train/referring.json" \
-    --referring_image_folder "/nfs-data1/public/psalm_data/RRSIS-D_split/referring/train/JPEGImages" \
+    --referring_json_path "/nfs-data1/public/referring/train/updated_referring.json" \
+    --referring_image_folder "/nfs-data1/public/referring/train/JPEGImages" \
     --ref_coco_path "/path/to/refcoco/refcoco_train.json" \
     --ref_coco_plus_path "/path/to/refcoco+/refcoco+_train.json" \
     --ref_coco_g_path "/path/to/refcocog/refcocog_train.json" \
@@ -42,14 +42,13 @@ deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --projector_outdim 2048 \
     --swin_type 'base' \
     --fp16 True \
-    --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_deformable \
+    --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_four_prompt \
     --num_train_epochs 10 \
     --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy "no" \
-    --save_strategy "steps" \
-    --save_steps 1500 \
+    --save_strategy "epoch" \
     --save_total_limit 20 \
     --learning_rate 5e-6 \
     --weight_decay 0. \
@@ -64,6 +63,7 @@ deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --report_to none \
     --seg_task 'region' \
     --cross_image_seg_task True \
+    --region_mask_type "point_visual_prompt_mask||box_visual_prompt_mask||scribble_visual_prompt_mask||mask_visual_prompt_mask"
     # --train_backbone True \
     # --freeze_vision_tower False \
     
