@@ -410,10 +410,10 @@ def make_unify_datamodule(tokenizer, data_args, training_args, seg_task, cross_i
     interactive__dataset = interactive_dataset(json_path=data_args.region_json_path, tokenizer=tokenizer,data_args=data_args)
     interactive__cross_dataset = Cross_interactive_dataset(json_path=data_args.region_cross_json_path, tokenizer=tokenizer,data_args=data_args)
 
-    # datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[2]
+    datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[2]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 
     # datasets =  [interactive__dataset]
-    datasets =  [interactive__cross_dataset]
+    #datasets =  [interactive__cross_dataset]
 
     # datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[1]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 

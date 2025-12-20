@@ -2333,7 +2333,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     else:
                         mask_losses.pop(k)
 
-                loss_region_class= loss_region_class*0.05        
+                loss_region_class= loss_region_class*0.4 
+                loss_mask= loss_mask*1.5       
                 mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class + loss_proposal
                 
                 # 确保损失为张量类型

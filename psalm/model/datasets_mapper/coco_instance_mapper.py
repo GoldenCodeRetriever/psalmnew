@@ -257,26 +257,37 @@ class COCOInstanceNewBaselineDatasetMapper:
 
             filter_annos = []
 
-            if 'point_visual_prompt_mask' in annos[0]:
-                if region_mask_type is None:
-                    region_mask_type = ['point_visual_prompt_mask', 'mask_visual_prompt_mask', 'box_visual_prompt_mask',
-                                        'scribble_visual_prompt_mask']
+            if region_mask_type is None:
+                region_mask_type = ['point_visual_prompt_mask', 'mask_visual_prompt_mask', 
+                                    'box_visual_prompt_mask', 'scribble_visual_prompt_mask']
+
+            has_visual_prompt = False
+            if len(annos) > 0:
+                for m_type in region_mask_type:
+                    if m_type in annos[0]:
+                        has_visual_prompt = True
+                        break
+            
+            if has_visual_prompt:
                 for anno in annos:
                     non_empty_masks = []
                     for mask_type in region_mask_type:
-                        if is_mask_non_empty(anno[mask_type]):
+                        if mask_type in anno and is_mask_non_empty(anno[mask_type]):
                             non_empty_masks.append(mask_type)
-                    # assert non_empty_masks, 'No visual prompt found in {}'.format(dataset_dict['file_name'])
+                    
                     if len(non_empty_masks) == 0:
                         continue
+                    
                     used_mask_type = random.choice(non_empty_masks)
                     region_mask = decode(anno[used_mask_type])
                     if used_mask_type in ['point_visual_prompt_mask', 'scribble_visual_prompt_mask']:
                         radius = 10 if used_mask_type == 'point_visual_prompt_mask' else 5
                         region_mask = enhance_with_circles(region_mask, radius)
+                    
                     scale_region_mask = transforms.apply_segmentation(region_mask)
                     region_masks.append(scale_region_mask)
                     filter_annos.append(anno)
+
             if len(filter_annos) == 0:
                 filter_annos = annos
             # NOTE: does not support BitMask due to augmentation

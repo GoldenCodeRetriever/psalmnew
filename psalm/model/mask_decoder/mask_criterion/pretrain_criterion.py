@@ -150,14 +150,36 @@ class PSALM_criterion(nn.Module):
         assert len(indices) == len(src_logits_list), 'batch size mismatch'
         target_query = []
         for sample_src_logits, sample_indices in zip(src_logits_list, indices):
+            # sample_src_logits: [num_queries, 1]
             sample_target_query = torch.zeros_like(sample_src_logits).to(sample_src_logits.device)
             index_i, index_j = sample_indices
-            sample_target_query[index_j, index_i] = 1
+            
+            # index_i: matched query indices (predictions)
+            # index_j: matched target indices (ground truths)
+            
+            # fix: use index_i (query index) to set the label for the corresponding query
+            # ensure index_i is within bounds
+            valid_idx = index_i[index_i < sample_src_logits.shape[0]]
+            
+            if sample_src_logits.shape[1] == 1:
+                sample_target_query[valid_idx, 0] = 1
+            else:
+                # Fallback for unexpected shapes, though likely [N, 1]
+                # If shape is [N, C], we might need more logic, but for region binary cls, it's [N, 1]
+                pass 
+                
             target_query.append(sample_target_query)
+            
         src_logits = torch.cat([sample_src_logits.flatten() for sample_src_logits in src_logits_list], dim=0)
         target_query = torch.cat([sample_target_query.flatten() for sample_target_query in target_query], dim=0)
         num_sample = src_logits.shape[0]
-        pos_weight = (num_sample - num_masks) / num_masks
+        
+        # Avoid division by zero
+        if num_masks == 0:
+            pos_weight = torch.tensor(1.0).to(src_logits.device)
+        else:
+            pos_weight = (num_sample - num_masks) / num_masks
+            
         loss_func = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight).to(src_logits.device))
         loss_region_class = loss_func(src_logits, target_query)
         losses = {"loss_region_class": loss_region_class}
