@@ -44,7 +44,7 @@ deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --fp16 True \
     --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_four_prompt \
     --num_train_epochs 10 \
-    --per_device_train_batch_size 8 \
+    --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy "no" \

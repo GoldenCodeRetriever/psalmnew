@@ -959,22 +959,20 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         self.coco_class_name = category_names + ['background']
         print(f"category_ids: {category_ids}")
     
-    def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
-                                 image1_token_index=IMAGE1_TOKEN_INDEX,
+    def tokenizer_special_tokens(self, prompt, tokenizer, image1_token_index=IMAGE1_TOKEN_INDEX,
                                  image1_deform_token_index=IMAGE1_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
         # Cross-image dataset: only map <image1_deform>, do not map <image_deform> here.
         special_token_map = {
-            '<image>': image_token_index,
             '<image1>': image1_token_index,
             '<image1_deform>': image1_deform_token_index,
             '<seg>': seg_token_index,
             '<cls>': cls_token_index,
             '<region>': region_token_index,
         }
-        prompt_chunks = re.split('(<image>|<image1>|<image1_deform>|<seg>|<cls>|<region>)', prompt)
+        prompt_chunks = re.split('(<image1>|<image1_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -1075,7 +1073,7 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         # 检查是否使用deformable模式
         use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
         if use_deformable:
-            deformable_note = ' Note: Note: After the target image token (<image1>), there will be a sequence of deformable feature tokens (<image1_deform>) that contain early-fused features. These tokens are computed by using the region features extracted from Image <image> (the source image) as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. Specifically, they represent multiple potential matching regions in the target image. You can use these deformable features as auxiliary information to better understand the cross-image relationship for more accurate segmentation of all matching instances.'
+            deformable_note = ' Note: Note: After the target image token (<image1>), there will be a sequence of deformable feature tokens (<image1_deform>) that contain early-fused features. These tokens are computed by using the region features extracted from the source image as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. Specifically, they represent multiple potential matching regions in the target image. You can use these deformable features as auxiliary information to better understand the cross-image relationship for more accurate segmentation of all matching instances.'
             sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
         else:
             sources_value = f'\nThis is all regions: {regions_inst}\n'

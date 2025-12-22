@@ -1005,7 +1005,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         seg_query_indices = torch.where(input_id == SEG_TOKEN_INDEX)[0]
         cls_token_indices = torch.where(input_id == CLS_TOKEN_INDEX)[0]
         region_token_indices = torch.where(input_id == REGION_TOKEN_INDEX)[0]
-        assert len(image_token_indices) == 1, 'not supporting multi image index'
+        assert len(image_token_indices) <= 1, 'not supporting multi image index'
         assert len(seg_query_indices) == 1, 'not supporting multi seg index'
         if class_name_embedding_indices is not None:
             assert len(cls_token_indices) == len(class_embed), 'the number of <cls> tokens and class_embed needs to be same'
