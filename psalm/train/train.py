@@ -266,7 +266,13 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
 
     if getattr(trainer.args, "tune_mm_mlp_adapter", False):
         # Only save Adapter
-        keys_to_match = ['mm_projector']
+        keys_to_match = ['mm_projector', 
+            'region_projector',       # 必须保存！
+            'seg_query_projector',    # 必须保存！
+            'SEG_token_projector', 
+            'pixel_decoder',          # Mask2Former组件
+            'predictor',              # Mask2Former组件
+            'class_name_projector']
         if getattr(trainer.args, "use_im_start_end", False):
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
@@ -402,7 +408,7 @@ def make_unify_datamodule(tokenizer, data_args, training_args, seg_task, cross_i
     # refcoco_dataset = RefCOCO_dataset(json_path=referring_json_path, tokenizer=tokenizer, data_args=data_args)
     # datasets.extend([refcoco_dataset]*data_ratio[1])
 
-    # region_coco_dataset = COCO_interactive_dataset(json_path=data_args.region_json_path, tokenizer=tokenizer,data_args=data_args)
+    # region_coco_dataset = COCO_interactive_dataset(json_paths=data_args.region_json_path, tokenizer=tokenizer,data_args=data_args)
     # datasets.extend([region_coco_dataset]*data_ratio[2])
 
 
@@ -410,10 +416,10 @@ def make_unify_datamodule(tokenizer, data_args, training_args, seg_task, cross_i
     interactive__dataset = interactive_dataset(json_path=data_args.region_json_path, tokenizer=tokenizer,data_args=data_args)
     interactive__cross_dataset = Cross_interactive_dataset(json_path=data_args.region_cross_json_path, tokenizer=tokenizer,data_args=data_args)
 
-    datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[2]
+    #datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[2]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 
     # datasets =  [interactive__dataset]
-    #datasets =  [interactive__cross_dataset]
+    datasets =  [interactive__cross_dataset]
 
     # datasets =  [referring__dataset]*data_ratio[0]  +  [interactive__cross_dataset]*data_ratio[1]
     # datasets =  [referring__dataset]*data_ratio[0] + [interactive__dataset]*data_ratio[1] 
@@ -554,6 +560,37 @@ def train():
 
     # 设置模型的特殊token（SEG=分割token索引，EOS=结束token索引）
     model.get_special_token(SEG=tokenizer("[SEG]", return_tensors='pt', add_special_tokens=False)['input_ids'], EOS=tokenizer.eos_token_id)
+
+    print("====== [Debug] Checking and Unfreezing Segmentation Modules ======")
+    # 需要解冻的模块名称列表
+    modules_to_unfreeze = [
+        "region_projector",       # 【核心】负责跨图Prompt特征投影
+        "seg_query_projector",    # 负责通用分割Query投影
+        "SEG_token_projector",    # 负责指代分割投影
+        "pixel_decoder",          # Mask2Former 像素解码器
+        "predictor",              # Mask2Former 预测器 (Transformer Decoder)
+        "class_name_projector"    # 类别投影
+    ]
+    
+    # 遍历模型子模块进行解冻
+    for name, module in model.named_children():
+        if name in modules_to_unfreeze:
+            print(f"-> Unfreezing module: {name}")
+            module.requires_grad_(True) 
+            # 再次确认是否有参数未解冻
+            for p in module.parameters():
+                p.requires_grad = True
+
+    # 再次检查 region_projector 是否真的解冻了
+    if hasattr(model, 'region_projector'):
+        is_trainable = any(p.requires_grad for p in model.region_projector.parameters())
+        print(f"-> Verification: model.region_projector trainable? {is_trainable}")
+        if not is_trainable:
+            print("-> [WARNING] region_projector was frozen! Forcing unfreeze...")
+            for p in model.region_projector.parameters():
+                p.requires_grad = True
+    else:
+        print("-> [WARNING] model.region_projector not found!")
 
     # 构建统一数据集模块（训练集、数据整理器）
     data_module = make_unify_datamodule(tokenizer=tokenizer, data_args=data_args, training_args=training_args, seg_task=model_args.seg_task,cross_image_seg_task=model_args.cross_image_seg_task)

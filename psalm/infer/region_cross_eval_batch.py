@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
 import torch
 from enum import Enum
@@ -113,14 +113,14 @@ class DataArguments:
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     region_cross_image_folder: Optional[str] = field(default='/nfs-data1/public/test/images')
-    model_path: Optional[str] = field(default="/nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_gaosi/checkpoint-15440")
+    model_path: Optional[str] = field(default="/nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_1.21/checkpoint-8630")
     mask_config: Optional[str] = field(default="./psalm/mask_config/maskformer2_swin_base_384_bs16_50ep.yaml")
     image_aspect_ratio: str = 'square'
     image_grid_pinpoints: Optional[str] = field(default=None)
-    json_path: str = '/nfs-data1/public/test/newinteractive_category_1.json'
+    json_path: str = '/nfs-data1/public/test/newinteractive_category_6.json'
     model_map_name: str = 'psalm'
     version: str = 'llava_phi'  
-    output_dir: str = './output/interactive_segmentation_newtest0.6'
+    output_dir: str = './output/interactive_segmentation_1.21'
     segmentation: bool = True
     eval_batch_size: int = 4  
     dataloader_num_workers: int = 8
@@ -169,7 +169,7 @@ def compute_metric(intersection_meter, union_meter, acc_iou_meter, results_list)
         scores = results['scores']
         pred_mask = []
         for i, score_ in enumerate(scores):
-            if score_ > 0.6:
+            if score_ > 0:
                 pred_mask.append(preds[i])
         if len(pred_mask) == 0:
             pred_mask = [np.zeros_like(gt, dtype=np.uint8)]

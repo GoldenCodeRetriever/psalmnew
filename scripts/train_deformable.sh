@@ -13,7 +13,7 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:1024
 # 使用deepspeed进行分布式训练
 # --include: 指定使用的GPU节点，格式为 localhost:gpu_id1,gpu_id2,...
 # --master_port: 主节点端口号，避免冲突
-deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
+deepspeed --include localhost:4,5,6,7 --master_port 29501 psalm/train/train.py \
     --deepspeed ./scripts/zero2.json \
     --model_name_or_path "/home/lipeilang/projects/PSALM_new/PSALM/phi-1_5_dev" \
     --version "llava_phi" \
@@ -42,9 +42,9 @@ deepspeed --include localhost:0 --master_port 29501 psalm/train/train.py \
     --projector_outdim 2048 \
     --swin_type 'base' \
     --fp16 True \
-    --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_four_prompt \
+    --output_dir /nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_1.21 \
     --num_train_epochs 10 \
-    --per_device_train_batch_size 4 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 2 \
     --evaluation_strategy "no" \

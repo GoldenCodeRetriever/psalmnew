@@ -827,23 +827,10 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         """
         为Deformable Cross-Attention生成查询特征。
         
-        根据任务类型生成相应的查询向量：
-        - 'referring': 从文本指代词的嵌入中提取
-        - 'panoptic'/'semantic': 从类别名称的嵌入中提取
-        - 'interactive'/'region': 从用户交互提示的池化特征中提取
-        - 'cross_image': 从跨图提示特征中提取
-        - 其他: 使用学习的分割查询向量
-        
-        Args:
-            task_type: str, 任务类型标识
-            batch_size: int, 批量大小
-            device: torch.device, 设备
-            class_name_embedding: (B, num_classes, hidden_dim), 可选，类别名称嵌入
-            region_feature_list: list, 可选，区域特征列表
-            refer_embeddings: (B, 1, hidden_dim), 可选，指代词的嵌入特征
-        
-        Returns:
-            queries_z_q: (B, N_q, query_dim), 查询特征
+        修改点：
+        1. 移除了随机初始化的 nn.Linear，全部使用训练好的 self.xxx_projector。
+        2. 移除了 Referring 和 Region/Cross 任务的默认兜底 (seg_query)。
+           如果缺少必要的提示输入（文本或区域），直接报错，避免输出无效的全黑结果。
         """
         from psalm.model.multimodal_projector.deformable_alignment import MultiScaleDeformableCrossAttentionAlignment
         
@@ -853,143 +840,97 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
 
         query_dim = projector.query_dim
         
-        # 方案1：Panoptic/Semantic分割 - 使用类别名称嵌入作为查询
+        # ------------------------------------------------------------------
+        # 方案1：Panoptic/Semantic分割 - 使用类别名称嵌入 或 学习的Query
+        # ------------------------------------------------------------------
         if 'panoptic' in task_type or 'semantic' in task_type:
             if class_name_embedding is not None:
-                # class_name_embedding: (B, num_classes, hidden_dim)
                 queries_z_q = class_name_embedding
                 source = 'class_name'
+                # 类别嵌入通常在 forward 中已经投影过，这里假设维度正确
+                # 如果需要投影，可以使用 self.class_name_projector (需确认是否重复投影)
             else:
-                # 后备方案：使用学习的分割查询
+                # Panoptic 任务允许回退到 seg_query (通用Query)
                 queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
                 source = 'seg_query'
-                # 投影到query_dim
                 if queries_z_q.shape[-1] != query_dim:
-                    # 使用线性投影
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
+                    queries_z_q = self.seg_query_projector(queries_z_q)
         
-        # 方案2：Referring分割 - 使用指代词嵌入作为查询
+        # ------------------------------------------------------------------
+        # 方案2：Referring分割 - 必须使用指代词嵌入
+        # ------------------------------------------------------------------
         elif 'referring' in task_type:
-            if refer_embeddings is not None:
-                queries_z_q = refer_embeddings
-                source = 'refer'
-                # 确保维度匹配
-                if queries_z_q.dim() == 2: # (B, C) -> (B, 1, C)
-                    queries_z_q = queries_z_q.unsqueeze(1)
-                
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
+            if refer_embeddings is None:
+                # 【修改】取消兜底，直接报错
+                raise ValueError(f"[PSALM Error] Task '{task_type}' requires 'refer_embeddings' (text prompts), but got None.")
             
-            else:   
-                # 后备方案
-                queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
-                source = 'seg_query'
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
+            queries_z_q = refer_embeddings
+            source = 'refer'
+            if queries_z_q.dim() == 2: # (B, C) -> (B, 1, C)
+                queries_z_q = queries_z_q.unsqueeze(1)
+            
+            # 使用训练好的 SEG_token_projector
+            if queries_z_q.shape[-1] != query_dim:
+                queries_z_q = self.SEG_token_projector(queries_z_q)
         
-        # 方案3：Interactive/Region分割 - 使用区域提示特征作为查询
-        elif 'interactive' in task_type or 'region' in task_type:
-            if region_feature_list is not None:
-                # region_feature_list: list of (num_regions, hidden_dim) tensors
-                # 对每个样本进行处理
-                queries_list = []
-                for region_feat in region_feature_list:
-                    if region_feat is not None and region_feat.numel() > 0:
-                        # region_feat: (num_regions, hidden_dim)
-                        queries_list.append(region_feat)
-                    else:
-                        # 无区域信息，使用零向量
-                        queries_list.append(torch.zeros(1, query_dim, device=device))
-                
-                # 需要对齐所有查询的长度
-                max_num_regions = max(q.shape[0] for q in queries_list) if queries_list else 1
-                queries_aligned = []
-                for q in queries_list:
-                    if q.shape[0] < max_num_regions:
-                        padding = torch.zeros(max_num_regions - q.shape[0], q.shape[1], device=device)
-                        q = torch.cat([q, padding], dim=0)
-                    queries_aligned.append(q)
-                queries_z_q = torch.stack(queries_aligned, dim=0)  # (B, max_num_regions, hidden_dim)
-                source = 'region'
-                # 投影到query_dim
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
-            else:
-                # 后备方案
-                queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
-                source = 'seg_query'
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
+        # ------------------------------------------------------------------
+        # 方案3：Interactive/Region/Cross-image分割 - 必须使用区域提示特征
+        # ------------------------------------------------------------------
+        elif 'interactive' in task_type or 'region' in task_type or \
+             'cross_image' in task_type or 'cross' in task_type:
+            
+            if region_feature_list is None:
+                # 【修改】取消兜底，直接报错。这能帮你发现是否因删除了<image>导致特征丢失。
+                raise ValueError(f"[PSALM Error] Task '{task_type}' requires 'region_feature_list' (visual prompts), but got None.")
+            
+            # 处理 Batch 对齐
+            queries_list = []
+            # 获取输入维度以创建正确的 padding (防止后续 stack 报错)
+            input_dim = self.config.hidden_size # 默认为 LLM hidden size
+            if len(region_feature_list) > 0 and region_feature_list[0] is not None and region_feature_list[0].numel() > 0:
+                input_dim = region_feature_list[0].shape[-1]
+
+            for region_feat in region_feature_list:
+                if region_feat is not None and region_feat.numel() > 0:
+                    queries_list.append(region_feat)
+                else:
+                    # 使用 input_dim 创建零向量
+                    queries_list.append(torch.zeros(1, input_dim, device=device))
+            
+            max_num_regions = max(q.shape[0] for q in queries_list) if queries_list else 1
+            queries_aligned = []
+            for q in queries_list:
+                if q.shape[0] < max_num_regions:
+                    padding = torch.zeros(max_num_regions - q.shape[0], q.shape[1], device=device)
+                    q = torch.cat([q, padding], dim=0)
+                queries_aligned.append(q)
+            
+            queries_z_q = torch.stack(queries_aligned, dim=0)
+            source = 'region'
+            
+            # 使用训练好的 region_projector
+            if queries_z_q.shape[-1] != query_dim:
+                queries_z_q = self.region_projector(queries_z_q)
         
-        # 方案4：Cross-image分割 - 使用跨图提示特征作为查询
-        elif 'cross_image' in task_type or 'cross' in task_type:
-            # 跨图任务可以使用区域特征或默认查询
-            if region_feature_list is not None:
-                queries_list = []
-                for region_feat in region_feature_list:
-                    if region_feat is not None and region_feat.numel() > 0:
-                        queries_list.append(region_feat)
-                    else:
-                        queries_list.append(torch.zeros(1, query_dim, device=device))
-                
-                max_num_regions = max(q.shape[0] for q in queries_list) if queries_list else 1
-                queries_aligned = []
-                for q in queries_list:
-                    if q.shape[0] < max_num_regions:
-                        padding = torch.zeros(max_num_regions - q.shape[0], q.shape[1], device=device)
-                        q = torch.cat([q, padding], dim=0)
-                    queries_aligned.append(q)
-                queries_z_q = torch.stack(queries_aligned, dim=0)
-                source = 'region'
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
-            else:
-                queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
-                source = 'seg_query'
-                if queries_z_q.shape[-1] != query_dim:
-                    proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                    queries_z_q = proj_layer(queries_z_q)
-        
-        # 其他任务 - 使用学习的分割查询向量
+        # ------------------------------------------------------------------
+        # 其他未知任务 - 使用默认 Seg Query
+        # ------------------------------------------------------------------
         else:
             queries_z_q = self.seg_query.unsqueeze(0).expand(batch_size, -1, -1)
             source = 'seg_query'
             if queries_z_q.shape[-1] != query_dim:
-                proj_layer = nn.Linear(queries_z_q.shape[-1], query_dim).to(device)
-                queries_z_q = proj_layer(queries_z_q)
+                queries_z_q = self.seg_query_projector(queries_z_q)
         
-        # 确保查询维度匹配
-        # if queries_z_q.shape[-1] != query_dim:
-        #     raise ValueError(
-        #         f"Query dimension mismatch: expected {query_dim}, got {queries_z_q.shape[-1]}. "
-        #         f"Please check the projection layer."
-        #     )
-        
+        # 维度检查与调整
         if queries_z_q.dim() == 4:
-            # 如果形状是 [B, N, 1, C]，压缩第2维
             if queries_z_q.shape[2] == 1:
                 queries_z_q = queries_z_q.squeeze(2)
-            # 如果形状是 [B, N, C, 1]，压缩第3维
             elif queries_z_q.shape[3] == 1:
                 queries_z_q = queries_z_q.squeeze(3)
             else:
-                # 如果是其他情况，尝试 flatten，假设最后两维是空间维度或者多余维度
-                # 但通常 deformable query 应该是 (B, N, C)
-                # 这里做一个安全处理：合并 B, N 之后的维度
                 B, N = queries_z_q.shape[0], queries_z_q.shape[1]
                 queries_z_q = queries_z_q.view(B, N, -1)
                 
-        # 再次确认维度
-        if queries_z_q.shape[-1] != query_dim:
-            # 不匹配时仍返回（上层会处理）
-            pass
-
         return queries_z_q, source
 
         
@@ -2308,7 +2249,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     
                     # 4. 计算 MSE Loss
                     # 这里的 300.0 是权重，可以根据 loss 大小调整
-                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 500.0
+                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 200.0
                 
         
                 loss_mask = 0.0
@@ -2333,8 +2274,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     else:
                         mask_losses.pop(k)
 
-                loss_region_class= loss_region_class*0.4 
-                loss_mask= loss_mask*1.5       
+                loss_region_class= loss_region_class*0.05 
+                loss_mask= loss_mask*6.0       
+                loss_SEG_class= loss_SEG_class*0.07
                 mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class + loss_proposal
                 
                 # 确保损失为张量类型
