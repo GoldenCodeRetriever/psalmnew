@@ -145,22 +145,41 @@ class PSALM_criterion(nn.Module):
     def loss_region_labels(self, outputs, targets, indices, num_masks):
         assert "pred_region_logits" in outputs
         src_logits_list = outputs['pred_region_logits']
+        
         if src_logits_list is None:
             return {"loss_region_class": None}
+            
         assert len(indices) == len(src_logits_list), 'batch size mismatch'
+        
         target_query = []
         for sample_src_logits, sample_indices in zip(src_logits_list, indices):
             sample_target_query = torch.zeros_like(sample_src_logits).to(sample_src_logits.device)
             index_i, index_j = sample_indices
-            sample_target_query[index_j, index_i] = 1
+            
+            if len(index_i) > 0:
+                valid_mask = index_i < sample_src_logits.shape[1]
+                valid_i = index_i[valid_mask]
+                
+                if len(valid_i) > 0:
+                    sample_target_query[0, valid_i] = 1
+            
             target_query.append(sample_target_query)
+            
         src_logits = torch.cat([sample_src_logits.flatten() for sample_src_logits in src_logits_list], dim=0)
         target_query = torch.cat([sample_target_query.flatten() for sample_target_query in target_query], dim=0)
+        
         num_sample = src_logits.shape[0]
-        pos_weight = (num_sample - num_masks) / num_masks
-        loss_func = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight).to(src_logits.device))
+        
+        if num_masks == 0:
+            pos_weight = torch.tensor(1.0).to(src_logits.device)
+        else:
+            pos_weight = (num_sample - num_masks) / num_masks
+            pos_weight = torch.tensor(pos_weight).to(src_logits.device)
+        
+        loss_func = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         loss_region_class = loss_func(src_logits, target_query)
         losses = {"loss_region_class": loss_region_class}
+        
         return losses
 
 

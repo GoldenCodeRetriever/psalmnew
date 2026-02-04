@@ -1280,10 +1280,9 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         seg_query_mask = torch.zeros_like(input_ids)
         aux_similarity_maps = []
 
-        # 非多模态场景
+        # 非多模态场景 / 纯文本推理
         if vision_tower is None or images is None or input_ids.shape[1] == 1:
-            if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[
-                1] == 1:
+            if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[1] == 1:
                 attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1),
                                             dtype=attention_mask.dtype, device=attention_mask.device)
             return input_ids, attention_mask, past_key_values, None, labels, seg_query_mask
@@ -1291,7 +1290,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         # 检查是否是Deformable模式
         projector = self.get_model().mm_projector
         is_deformable_mode = isinstance(projector, MultiScaleDeformableCrossAttentionAlignment)
-        # 初始化 queries 源标识（后续由 create_deformable_queries 填充）
+        
+        # 初始化 queries 源标识
         queries_z_q_source = 'N/A'
         queries_z_q_image1_source = 'N/A'
         
@@ -1300,7 +1300,6 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         is_cross_image_task = False
         if dataset_type is not None:
             if isinstance(dataset_type, list) and len(dataset_type) > 0:
-                # 取第一个作为batch的任务类型（假设batch内任务类型一致）
                 batch_dataset_type = dataset_type[0] if isinstance(dataset_type[0], str) else ''
                 if 'panoptic' in batch_dataset_type:
                     task_type = 'panoptic'
@@ -1314,355 +1313,286 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 else:
                     task_type = batch_dataset_type
         
-        # 如果是跨图任务，需要特殊处理：先提取提示图的区域特征
-        # 对于跨图任务，提示图只使用baseline特征，不需要deformable特征
-        # 目标图使用提示图的区域特征作为zq，做deformable attention
-        if is_cross_image_task and image1 is not None and is_deformable_mode:
-            # 跨图任务：先处理提示图，提取区域特征
-            # 暂时不创建queries_z_q，等提取区域特征后再创建queries_z_q_image1
-            queries_z_q = None
-            queries_z_q_image1 = None
-        elif is_deformable_mode:
-            # 非跨图任务或单图任务：正常创建查询
-            batch_size = input_ids.shape[0]
-            device = input_ids.device
-            queries_z_q_source = 'N/A'
-            queries_z_q_image1_source = 'N/A'
-
-            # 为images创建查询
-            queries_z_q, queries_z_q_source = self.create_deformable_queries(
-                task_type=task_type,
-                batch_size=batch_size,
-                device=device,
-                class_name_embedding=None,  # 将在后续处理中填充
-                refer_embedding_indices=refer_embedding_indices,
-                hidden_states=None,  # 此时hidden_states不可用，需要后续处理
-                region_feature_list=None  # 此时region_feature_list也不可用
-            )
-            
-            # 为image1创建查询（非跨图任务的双图场景）
-            if image1 is not None:
-                queries_z_q_image1, queries_z_q_image1_source = self.create_deformable_queries(
-                    task_type=task_type,
-                    batch_size=batch_size,
-                    device=device,
-                    class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
-                    region_feature_list=None
-                )
-            else:
-                queries_z_q_image1 = None
-        else:
-            queries_z_q = None
-            queries_z_q_image1 = None
-
-        # baseline_projector 应在 initialize_vision_modules 中创建并加载权重
+        # 初始化 baseline projector
         baseline_projector = getattr(self.get_model(), 'baseline_projector', None) if is_deformable_mode else None
         if is_deformable_mode and baseline_projector is None:
-            raise RuntimeError('baseline_projector is not initialized. Call initialize_vision_modules with a proper pretrain_mm_mlp_adapter so baseline_projector is constructed and weights are loaded.')
+            raise RuntimeError('baseline_projector is not initialized.')
+
+        # 初始化特征变量
+        image_features = None
+        image1_features = None
+        image_deform_features = None
+        image1_deform_features = None
         
-        # 对于跨图任务，需要先处理提示图，提取区域特征
+        queries_z_q = None
+        queries_z_q_image1 = None
         prompt_region_features = None
+
+        # ================================================================================================
+        #  分支 A: 跨图任务 (Cross-Region Segmentation) - 核心修改区域
+        # ================================================================================================
         if is_cross_image_task and image1 is not None and is_deformable_mode:
-            # 1. 先处理提示图（images），提取baseline特征
+            # 1. 处理 目标图 (images) -> 这是要进 LLM 的主图，也是 Deformable 的被搜寻对象 (Key/Value)
+            # --------------------------------------------------------------------------------------
             if type(images) is list or images.ndim == 5:
                 concat_images = torch.cat([image for image in images], dim=0)
-                multi_scale_features_list = self.get_model().get_vision_tower()(concat_images)
-                res5_features = multi_scale_features_list[-1]
-                baseline_features_prompt = baseline_projector(res5_features)
-                
+            else:
+                concat_images = images
+            
+            # 计算目标图的多尺度特征
+            multi_scale_features_target_list = self.get_model().get_vision_tower()(concat_images)
+            res5_features_target = multi_scale_features_target_list[-1]
+            baseline_features_target = baseline_projector(res5_features_target)
+
+            # 准备给 LLM 的全图特征 (替换 <image>)
+            if type(images) is list or images.ndim == 5:
                 split_sizes = [image.shape[0] for image in images]
-                baseline_features_prompt = torch.split(baseline_features_prompt, split_sizes, dim=0)
+                image_features = torch.split(baseline_features_target, split_sizes, dim=0)
+                image_features = [x.flatten(0, 1) for x in image_features]
+            else:
+                if len(baseline_features_target.shape) == 3:
+                    image_features = [baseline_features_target[i] for i in range(baseline_features_target.shape[0])]
+                else:
+                    image_features = [baseline_features_target]
+            
+            # 准备给 Deformable Attention 的 Key/Value (字典格式)
+            multi_scale_features_target = {
+                'res2': multi_scale_features_target_list[0],
+                'res3': multi_scale_features_target_list[1],
+                'res4': multi_scale_features_target_list[2],
+                'res5': multi_scale_features_target_list[3],
+            }
+
+            # 2. 处理 提示图 (image1) -> 只用来提取 Region Query，不进 LLM
+            # --------------------------------------------------------------------------------------
+            if type(image1) is list or image1.ndim == 5:
+                concat_image1 = torch.cat([img for img in image1], dim=0)
+            else:
+                concat_image1 = image1
+            
+            # 计算提示图特征
+            multi_scale_features_prompt_list = self.get_model().get_vision_tower()(concat_image1)
+            res5_features_prompt = multi_scale_features_prompt_list[-1]
+            baseline_features_prompt = baseline_projector(res5_features_prompt) # (B, H*W, C)
+
+            # 整理格式以便 region_sampler 使用
+            if type(image1) is list or image1.ndim == 5:
+                split_sizes1 = [img.shape[0] for img in image1]
+                baseline_features_prompt = torch.split(baseline_features_prompt, split_sizes1, dim=0)
                 baseline_features_prompt = [x.flatten(0, 1) for x in baseline_features_prompt]
             else:
-                multi_scale_features_list = self.get_model().get_vision_tower()(images)
-                res5_features = multi_scale_features_list[-1]
-                baseline_features_prompt = baseline_projector(res5_features)
-                # 转换为list格式，方便后续处理
-                if len(baseline_features_prompt.shape) == 3:  # (B, H*W, hidden_dim)
+                if len(baseline_features_prompt.shape) == 3:
                     baseline_features_prompt = [baseline_features_prompt[i] for i in range(baseline_features_prompt.shape[0])]
-                else:  # (H*W, hidden_dim)
+                else:
                     baseline_features_prompt = [baseline_features_prompt]
-            
-            # 2. 从提示图中提取区域特征（如果有region masks）
-            if (input_ids == REGION_TOKEN_INDEX).sum() != 0 and instances is not None:
+
+            # 3. 采样 Region Queries (从 Prompt 图中)
+            # --------------------------------------------------------------------------------------
+            if instances is not None:
                 region_masks_list = [instance.region_masks.tensor for instance in instances]
-                # 使用提示图的baseline特征提取区域特征
+                # 注意：这里的 instances mask 是对应 image1 (提示图) 的
                 prompt_region_features = self.region_sampler(
                     baseline_features_prompt, 
                     region_masks_list,
                     original_dtype=baseline_features_prompt[0].dtype if len(baseline_features_prompt) > 0 else torch.float32,
                     return_dtype=baseline_features_prompt[0].dtype if len(baseline_features_prompt) > 0 else torch.float32
                 )
-                # prompt_region_features 已生成（静默，不打印）
-                pass
             
-            # 3. 使用提示图的区域特征作为zq，创建目标图的查询
+            # 4. 生成 Deformable Attention Features (<image1_deform>)
+            #    Query = Prompt Region Features
+            #    Key   = Target Image Features
+            # --------------------------------------------------------------------------------------
             if prompt_region_features is not None:
-                batch_size = input_ids.shape[0]
-                device = input_ids.device
-                queries_z_q_image1, queries_z_q_image1_source = self.create_deformable_queries(
+                # 直接调用 projector，或者使用 create_deformable_queries (如果它支持直接传 features)
+                # 这里为了清晰，直接调用 projector，逻辑与 else 分支对齐
+                
+                # 注意：queries 参数在这里通常用于 learnable queries，但我们需要传入 region features。
+                # 查看 projector 源码定义，如果 task_type='cross_image'，它通常会使用 region_feature_list 作为 query。
+                # 但 create_deformable_queries 封装了这一步。为了保持代码风格，我们模拟 create_deformable_queries 的行为，
+                # 但关键是传入正确的 multi_scale_features (Target)。
+                
+                # 调用 projector
+                # queries=None (因为我们用 region_feature_list)
+                # multi_scale_features=multi_scale_features_target (目标图)
+                # task_type='cross_image' (这会告诉 projector 使用 region_feature_list 作为 query)
+                
+                # 重新构建 batch 维度的 region_feature_list 传入 (projector 内部可能需要 list 或 tensor)
+                # projector 签名: forward(self, queries, multi_scale_features, task_type, region_feature_list=None)
+                
+                queries_z_q_image1, _ = self.create_deformable_queries(
                     task_type='cross_image',
-                    batch_size=batch_size,
-                    device=device,
+                    batch_size=len(prompt_region_features),
+                    device=prompt_region_features[0].device,
+                    region_feature_list=prompt_region_features, # 这里传入 list
                     class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
-                    region_feature_list=prompt_region_features  # 使用提示图的区域特征
+                    refer_embedding_indices=None
                 )
-            else:
-                # 如果没有区域特征，使用seg_query作为后备
-                batch_size = input_ids.shape[0]
-                device = input_ids.device
-                queries_z_q_image1, queries_z_q_image1_source = self.create_deformable_queries(
-                    task_type='cross_image',
-                    batch_size=batch_size,
-                    device=device,
-                    class_name_embedding=None,
-                    refer_embedding_indices=refer_embedding_indices,
-                    hidden_states=None,
-                    region_feature_list=None
+                
+                deformable_features1, similarity_map1 = projector(
+                    queries=queries_z_q_image1, # <--- 传 Tensor 给 queries 参数
+                    multi_scale_features=multi_scale_features_target,
+                    task_type='cross_image'
                 )
-            
-            # 4. 提示图只使用baseline特征，不需要deformable特征
-            if type(images) is list or images.ndim == 5:
-                image_features = baseline_features_prompt
-                image_deform_features = None
-            else:
-                # 如果是单个tensor，需要保持batch维度
-                if isinstance(baseline_features_prompt, list):
-                    # 如果已经是list，直接使用
-                    image_features = baseline_features_prompt
+                
+                if similarity_map1 is not None:
+                    aux_similarity_maps.append(similarity_map1)
+                
+                # 分割并整理 deformable features
+                if type(images) is list or images.ndim == 5:
+                     split_sizes = [image.shape[0] for image in images]
+                     deformable_features1 = torch.split(deformable_features1, split_sizes, dim=0)
+                     deformable_features1 = [x.flatten(0, 1) for x in deformable_features1]
                 else:
-                    # 如果是tensor，转换为list
-                    if len(baseline_features_prompt.shape) == 3:
-                        image_features = [baseline_features_prompt[i] for i in range(baseline_features_prompt.shape[0])]
-                    else:
-                        image_features = [baseline_features_prompt]
-                image_deform_features = None
+                     # 保持 (B, N_q, C) 结构
+                     pass
+                
+                image1_deform_features = deformable_features1
+                queries_z_q_image1 = prompt_region_features # 用于调试打印
+                queries_z_q_image1_source = 'PromptRegion'
+
+            # 5. 设置不需要的变量为 None
+            image1_features = None  # 提示图全图特征被丢弃，不进 LLM
+            image_deform_features = None # 目标图没有自引用的 deform token
+
+        # ================================================================================================
+        #  分支 B: 其他任务 (标准逻辑)
+        # ================================================================================================
         else:
-            # 非跨图任务：正常处理
-            #单图像/多图像
+            # 1. 创建查询 (Standard)
+            if is_deformable_mode:
+                batch_size = input_ids.shape[0]
+                device = input_ids.device
+                queries_z_q, queries_z_q_source = self.create_deformable_queries(
+                    task_type=task_type, batch_size=batch_size, device=device,
+                    refer_embedding_indices=refer_embedding_indices,
+                    region_feature_list=None # 标准模式下通常为 None
+                )
+                if image1 is not None:
+                    queries_z_q_image1, queries_z_q_image1_source = self.create_deformable_queries(
+                        task_type=task_type, batch_size=batch_size, device=device,
+                        refer_embedding_indices=refer_embedding_indices
+                    )
+
+            # 2. 处理 images
             if type(images) is list or images.ndim == 5:
                 concat_images = torch.cat([image for image in images], dim=0)
                 if is_deformable_mode:
-                    # Deformable模式：同时计算baseline和deformable特征
                     multi_scale_features_list = self.get_model().get_vision_tower()(concat_images)
-                    res5_features = multi_scale_features_list[-1]  # (B, C, H, W)
-                    baseline_features = baseline_projector(res5_features)  # (B, H*W, hidden_dim)
-                    
+                    res5_features = multi_scale_features_list[-1]
+                    baseline_features = baseline_projector(res5_features)
                     multi_scale_features = {
-                        'res2': multi_scale_features_list[0],
-                        'res3': multi_scale_features_list[1],
-                        'res4': multi_scale_features_list[2],
-                        'res5': multi_scale_features_list[3],
+                        'res2': multi_scale_features_list[0], 'res3': multi_scale_features_list[1],
+                        'res4': multi_scale_features_list[2], 'res5': multi_scale_features_list[3],
                     }
                     deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
                     
                     split_sizes = [image.shape[0] for image in images]
                     baseline_features = torch.split(baseline_features, split_sizes, dim=0)
                     deformable_features = torch.split(deformable_features, split_sizes, dim=0)
-                    baseline_features = [x.flatten(0, 1) for x in baseline_features]
-                    deformable_features = [x.flatten(0, 1) for x in deformable_features]
-                    image_features = baseline_features
-                    image_deform_features = deformable_features
+                    image_features = [x.flatten(0, 1) for x in baseline_features]
+                    image_deform_features = [x.flatten(0, 1) for x in deformable_features]
                 else:
                     image_features = self.encode_images(concat_images, queries_z_q=queries_z_q)
                     split_sizes = [image.shape[0] for image in images]
                     image_features = torch.split(image_features, split_sizes, dim=0)
                     image_features = [x.flatten(0, 1) for x in image_features]
-                    image_deform_features = None
             else:
                 if is_deformable_mode:
-                    # Deformable模式：同时计算baseline和deformable特征
                     multi_scale_features_list = self.get_model().get_vision_tower()(images)
-                    res5_features = multi_scale_features_list[-1]  # (B, C, H, W)
-                    baseline_features = baseline_projector(res5_features)  # (B, H*W, hidden_dim)
-                    
+                    res5_features = multi_scale_features_list[-1]
+                    baseline_features = baseline_projector(res5_features)
                     multi_scale_features = {
-                        'res2': multi_scale_features_list[0],
-                        'res3': multi_scale_features_list[1],
-                        'res4': multi_scale_features_list[2],
-                        'res5': multi_scale_features_list[3],
+                        'res2': multi_scale_features_list[0], 'res3': multi_scale_features_list[1],
+                        'res4': multi_scale_features_list[2], 'res5': multi_scale_features_list[3],
                     }
                     deformable_features, _ = projector(queries=queries_z_q, multi_scale_features=multi_scale_features, task_type=task_type)
-                    
-                    # 保持batch维度，不flatten，在batch循环中处理
-                    image_features = baseline_features  # (B, H*W, hidden_dim)
-                    image_deform_features = deformable_features  # (B, N_q, hidden_dim)
+                    image_features = baseline_features
+                    image_deform_features = deformable_features
                 else:
                     image_features = self.encode_images(images, queries_z_q=queries_z_q)
-                    image_deform_features = None
 
-        image1_features = None
-        image1_deform_features = None
-        if image1 is not None:
-            if type(image1) is list or image1.ndim == 5:
-                concat_image1 = torch.cat([img for img in image1], dim=0)
-                if is_deformable_mode:
-                    # Deformable模式：同时计算baseline和deformable特征
-                    multi_scale_features_list1 = self.get_model().get_vision_tower()(concat_image1)
-                    res5_features1 = multi_scale_features_list1[-1]
-                    baseline_features1 = baseline_projector(res5_features1)
-                    
-                    multi_scale_features1 = {
-                        'res2': multi_scale_features_list1[0],
-                        'res3': multi_scale_features_list1[1],
-                        'res4': multi_scale_features_list1[2],
-                        'res5': multi_scale_features_list1[3],
-                    }
-                    deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
-                    if similarity_map1 is not None:
-                        aux_similarity_maps.append(similarity_map1)
-                    print("deformable_features1, shape:", deformable_features1.shape)
-                    
-                    split_sizes1 = [img.shape[0] for img in image1]
-                    baseline_features1 = torch.split(baseline_features1, split_sizes1, dim=0)
-                    deformable_features1 = torch.split(deformable_features1, split_sizes1, dim=0)
-                    baseline_features1 = [x.flatten(0, 1) for x in baseline_features1]
-                    deformable_features1 = [x.flatten(0, 1) for x in deformable_features1]
-                    image1_features = baseline_features1
-                    image1_deform_features = deformable_features1
+            # 3. 处理 image1 (如果有)
+            if image1 is not None:
+                if type(image1) is list or image1.ndim == 5:
+                    concat_image1 = torch.cat([img for img in image1], dim=0)
+                    if is_deformable_mode:
+                        multi_scale_features_list1 = self.get_model().get_vision_tower()(concat_image1)
+                        res5_features1 = multi_scale_features_list1[-1]
+                        baseline_features1 = baseline_projector(res5_features1)
+                        multi_scale_features1 = {
+                            'res2': multi_scale_features_list1[0], 'res3': multi_scale_features_list1[1],
+                            'res4': multi_scale_features_list1[2], 'res5': multi_scale_features_list1[3],
+                        }
+                        deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                        if similarity_map1 is not None: aux_similarity_maps.append(similarity_map1)
+                        
+                        split_sizes1 = [img.shape[0] for img in image1]
+                        baseline_features1 = torch.split(baseline_features1, split_sizes1, dim=0)
+                        deformable_features1 = torch.split(deformable_features1, split_sizes1, dim=0)
+                        image1_features = [x.flatten(0, 1) for x in baseline_features1]
+                        image1_deform_features = [x.flatten(0, 1) for x in deformable_features1]
+                    else:
+                        image1_features = self.encode_images(concat_image1, queries_z_q=queries_z_q_image1)
+                        split_sizes1 = [img.shape[0] for img in image1]
+                        image1_features = torch.split(image1_features, split_sizes1, dim=0)
+                        image1_features = [x.flatten(0, 1) for x in image1_features]
                 else:
-                    image1_features = self.encode_images(concat_image1, queries_z_q=queries_z_q_image1) 
-                    split_sizes1 = [img.shape[0] for img in image1]
-                    image1_features = torch.split(image1_features, split_sizes1, dim=0)
-                    image1_features = [x.flatten(0, 1) for x in image1_features]
-                    image1_deform_features = None
-            else:
-                if is_deformable_mode:
-                    # Deformable模式：同时计算baseline和deformable特征
-                    multi_scale_features_list1 = self.get_model().get_vision_tower()(image1)
-                    res5_features1 = multi_scale_features_list1[-1]
-                    baseline_features1 = baseline_projector(res5_features1)
-                    
-                    multi_scale_features1 = {
-                        'res2': multi_scale_features_list1[0],
-                        'res3': multi_scale_features_list1[1],
-                        'res4': multi_scale_features_list1[2],
-                        'res5': multi_scale_features_list1[3],
-                    }
-                    deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
-                    if similarity_map1 is not None:
-                        aux_similarity_maps.append(similarity_map1)
-                    print("deformable_features1, shape:", deformable_features1.shape)
-                    
-                    # 保持batch维度，不flatten
-                    image1_features = baseline_features1  # (B, H*W, hidden_dim)
-                    image1_deform_features = deformable_features1  # (B, N_q, hidden_dim)
-                else:
-                    image1_features = self.encode_images(image1, queries_z_q=queries_z_q_image1)
-                    image1_deform_features = None 
-
-
-        # Single concise English-only debug print (after queries creation)
+                    if is_deformable_mode:
+                        multi_scale_features_list1 = self.get_model().get_vision_tower()(image1)
+                        res5_features1 = multi_scale_features_list1[-1]
+                        baseline_features1 = baseline_projector(res5_features1)
+                        multi_scale_features1 = {
+                            'res2': multi_scale_features_list1[0], 'res3': multi_scale_features_list1[1],
+                            'res4': multi_scale_features_list1[2], 'res5': multi_scale_features_list1[3],
+                        }
+                        deformable_features1, similarity_map1 = projector(queries=queries_z_q_image1, multi_scale_features=multi_scale_features1, task_type=task_type)
+                        if similarity_map1 is not None: aux_similarity_maps.append(similarity_map1)
+                        image1_features = baseline_features1
+                        image1_deform_features = deformable_features1
+                    else:
+                        image1_features = self.encode_images(image1, queries_z_q=queries_z_q_image1)
+        
+        # 调试打印
         try:
-            zq_src = queries_z_q_source if 'queries_z_q_source' in locals() else 'N/A'
-            zq1_src = queries_z_q_image1_source if 'queries_z_q_image1_source' in locals() else 'N/A'
             mode_str = 'Deformable' if is_deformable_mode else 'Baseline'
-            print(f"[PSALM] task={task_type} mode={mode_str} zq={zq_src} zq1={zq1_src}")
+            print(f"[PSALM] task={task_type} mode={mode_str} zq={queries_z_q_source} zq1={queries_z_q_image1_source}")
         except Exception:
             pass
 
         # 拓展分割查询到batch层次
         expanded_seg_query = self.seg_query.unsqueeze(0).expand(input_ids.shape[0], -1, -1)
 
-
-        #区域特征提取
-        # 对于跨图任务，区域特征已经在前面从提示图中提取过了
+        # 区域特征处理 (Region Features for Region Sampler Output)
+        # 对于跨图任务，region_features 已经在前面提取了 (prompt_region_features)
+        # 注意：这里的 region_features 变量主要用于后续 region_embedding_mask，
+        # 如果 prompt_region_features 已经用于生成 deform token，是否还需要它暴露给 LLM？
+        # 根据原始代码逻辑，它会被用于 cur_region_feature_list。
         if is_cross_image_task and image1 is not None:
-            # 跨图任务：使用前面提取的prompt_region_features
-            region_features = prompt_region_features
-            region_embedding_masks = torch.zeros_like(input_ids)
+             # 将 prompt_region_features 赋值给 region_features，以保持向下兼容
+             region_features = prompt_region_features
+             region_embedding_masks = torch.zeros_like(input_ids)
         elif (input_ids == REGION_TOKEN_INDEX).sum() != 0 and instances is not None:
+            # 标准 Region 任务处理 (同原代码)
             region_masks_list = [instance.region_masks.tensor for instance in instances]
-
-            # [region_features_per_batch: [num_region, 1, dims]], len(region_features) = batch_size
-            # 使用baseline特征进行区域采样（deformable模式下使用baseline特征）
-            # region_sampler期望list格式的输入
             if isinstance(image_features, list):
                 region_features = self.region_sampler(image_features, region_masks_list,
                                                       original_dtype=image_features[0].dtype if len(image_features) > 0 else torch.float32,
                                                       return_dtype=image_features[0].dtype if len(image_features) > 0 else torch.float32)
             else:
-                # 非list情况：转换为list格式
-                # image_features可能是(B, seq_len, hidden_dim)或(seq_len, hidden_dim)
-                if len(image_features.shape) == 3:  # (B, seq_len, hidden_dim)
-                    image_features_list = [image_features[i] for i in range(image_features.shape[0])]
-                else:  # (seq_len, hidden_dim) - 单batch
-                    image_features_list = [image_features]
+                if len(image_features.shape) == 3:
+                     image_features_list = [image_features[i] for i in range(image_features.shape[0])]
+                else:
+                     image_features_list = [image_features]
                 region_features = self.region_sampler(image_features_list, region_masks_list,
                                                       original_dtype=image_features.dtype,
                                                       return_dtype=image_features.dtype)
-             # 初始化区域嵌入掩码，标记输入中区域特征的位置
             region_embedding_masks = torch.zeros_like(input_ids)
         else:
             region_features = None
             region_embedding_masks = None
 
-
-        # 如果是deformable模式，需要在输入序列中添加新的token
-        if is_deformable_mode:
-            # 对于跨图任务：只在IMAGE1_TOKEN之后插入IMAGE1_DEFORM_TOKEN（目标图）
-            # 对于其他任务：在IMAGE_TOKEN之后插入IMAGE_DEFORM_TOKEN
-            new_input_ids_list = []
-            new_labels_list = [] if labels is not None else None
-            for batch_idx, cur_input_ids in enumerate(input_ids):
-                cur_new_input_ids = []
-                cur_new_labels = [] if labels is not None else None
-                i = 0
-                while i < len(cur_input_ids):
-                    cur_new_input_ids.append(cur_input_ids[i])
-                    if labels is not None:
-                        cur_new_labels.append(labels[batch_idx][i])
-                    
-                    # 对于跨图任务，提示图不需要deformable token
-                    if is_cross_image_task and image1 is not None:
-                        # 跨图任务：只在目标图（IMAGE1_TOKEN）后插入deformable token
-                        if cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE1_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
-                    else:
-                        # 非跨图任务：在IMAGE_TOKEN后插入IMAGE_DEFORM_TOKEN
-                        if cur_input_ids[i] == IMAGE_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
-                        # 如果有IMAGE1_TOKEN（非跨图的双图场景），也插入IMAGE1_DEFORM_TOKEN
-                        elif cur_input_ids[i] == IMAGE1_TOKEN_INDEX:
-                            cur_new_input_ids.append(IMAGE1_DEFORM_TOKEN_INDEX)
-                            if labels is not None:
-                                cur_new_labels.append(IGNORE_INDEX)
-                    
-                    i += 1
-                
-                new_input_ids_list.append(torch.tensor(cur_new_input_ids, device=cur_input_ids.device, dtype=cur_input_ids.dtype))
-                if labels is not None:
-                    new_labels_list.append(torch.tensor(cur_new_labels, device=labels.device, dtype=labels.dtype))
-            
-            # 对齐batch内的序列长度
-            if len(new_input_ids_list) > 0:
-                max_len = max(len(ids) for ids in new_input_ids_list)
-                aligned_input_ids = []
-                aligned_labels = [] if labels is not None else None
-                for ids, lbls in zip(new_input_ids_list, new_labels_list if labels is not None else [None] * len(new_input_ids_list)):
-                    pad_len = max_len - len(ids)
-                    if pad_len > 0:
-                        pad_ids = torch.full((pad_len,), IGNORE_INDEX, device=ids.device, dtype=ids.dtype)
-                        ids = torch.cat([ids, pad_ids], dim=0)
-                        if labels is not None:
-                            pad_lbls = torch.full((pad_len,), IGNORE_INDEX, device=lbls.device, dtype=lbls.dtype)
-                            lbls = torch.cat([lbls, pad_lbls], dim=0)
-                    aligned_input_ids.append(ids)
-                    if labels is not None:
-                        aligned_labels.append(lbls)
-                input_ids = torch.stack(aligned_input_ids, dim=0)
-                if labels is not None:
-                    labels = torch.stack(aligned_labels, dim=0)
-                seg_query_mask = torch.zeros_like(input_ids)
-
+        # 构建新的 Input Embeds
+        # --------------------------------------------------------------------------------------
         new_input_embeds = []
         new_labels = [] if labels is not None else None
         new_seg_query_masks = []
@@ -1670,101 +1600,81 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
         new_refer_embedding_indices = [] if refer_embedding_indices is not None else None
         new_region_embedding_masks = [] if region_features is not None else None
 
-
         for batch_idx, cur_input_ids in enumerate(input_ids):
             cur_seg_query_mask = seg_query_mask[batch_idx]
             cur_seg_query = expanded_seg_query[batch_idx]
 
-            # 处理baseline特征
+            # 获取当前样本的特征
             if isinstance(image_features, list):
                 cur_image_feature = image_features[batch_idx]
             else:
-                # 非list情况：直接按batch索引
-                if len(image_features.shape) == 3:  # (B, seq_len, hidden_dim)
-                    cur_image_feature = image_features[batch_idx]  # (seq_len, hidden_dim)
-                else:  # (seq_len, hidden_dim) - 单batch情况
+                if image_features is not None and len(image_features.shape) == 3:
+                    cur_image_feature = image_features[batch_idx]
+                else:
                     cur_image_feature = image_features
-            
+
             if image1_features is not None:
                 if isinstance(image1_features, list):
                     cur_image1_feature = image1_features[batch_idx]
                 else:
-                    if len(image1_features.shape) == 3:  # (B, seq_len, hidden_dim)
+                    if len(image1_features.shape) == 3:
                         cur_image1_feature = image1_features[batch_idx]
                     else:
                         cur_image1_feature = image1_features
             else:
                 cur_image1_feature = None
-            
-            # 处理deformable特征（防护：可能为 None）
-            if is_deformable_mode:
-                if image_deform_features is None:
-                    cur_image_deform_feature = None
+
+            # 获取 deformable 特征
+            cur_image_deform_feature = None
+            if image_deform_features is not None:
+                if isinstance(image_deform_features, list):
+                    cur_image_deform_feature = image_deform_features[batch_idx]
                 else:
-                    if isinstance(image_deform_features, list):
+                    if len(image_deform_features.shape) == 3:
                         cur_image_deform_feature = image_deform_features[batch_idx]
                     else:
-                        # 非list情况：直接按batch索引
-                        if len(image_deform_features.shape) == 3:  # (B, N_q, hidden_dim)
-                            cur_image_deform_feature = image_deform_features[batch_idx]  # (N_q, hidden_dim)
-                        else:  # (N_q, hidden_dim) - 单batch情况
-                            cur_image_deform_feature = image_deform_features
-
-                if image1_deform_features is None:
-                    cur_image1_deform_feature = None
+                        cur_image_deform_feature = image_deform_features
+            
+            cur_image1_deform_feature = None
+            if image1_deform_features is not None:
+                if isinstance(image1_deform_features, list):
+                    cur_image1_deform_feature = image1_deform_features[batch_idx]
                 else:
-                    if isinstance(image1_deform_features, list):
+                    if len(image1_deform_features.shape) == 3:
                         cur_image1_deform_feature = image1_deform_features[batch_idx]
                     else:
-                        if len(image1_deform_features.shape) == 3:  # (B, N_q, hidden_dim)
-                            cur_image1_deform_feature = image1_deform_features[batch_idx]
-                        else:
-                            cur_image1_deform_feature = image1_deform_features
-            else:
-                cur_image_deform_feature = None
-                cur_image1_deform_feature = None
+                        cur_image1_deform_feature = image1_deform_features
 
             cur_class_name_embedding_indices = class_name_embedding_indices[batch_idx] if class_name_embedding_indices is not None else None
             cur_refer_embedding_indices = refer_embedding_indices[batch_idx] if refer_embedding_indices is not None else None
             cur_region_feature_list = region_features[batch_idx] if region_features is not None else None
             cur_region_embedding_mask = region_embedding_masks[batch_idx] if region_features is not None else None
+
+            # 纯文本 fallback 逻辑
             if (cur_input_ids == IMAGE_TOKEN_INDEX).sum() == 0 and (cur_input_ids == IMAGE1_TOKEN_INDEX).sum() == 0:
-                # multimodal LLM, but the current sample is not multimodal
                 cur_input_embeds = self.get_model().embed_tokens(cur_input_ids)
-                # ensure gradients back propagation, not changing cur_input_embeds
-                cur_input_embeds = cur_input_embeds + (
-                        0. * self.get_model().mm_projector(vision_tower.dummy_feature)).sum()
+                if vision_tower is not None: 
+                    cur_input_embeds = cur_input_embeds + (0. * self.get_model().mm_projector(vision_tower.dummy_feature)).sum()
                 new_input_embeds.append(cur_input_embeds)
-                if labels is not None:
-                    new_labels.append(labels[batch_idx])
+                if labels is not None: new_labels.append(labels[batch_idx])
                 new_seg_query_masks.append(cur_seg_query_mask)
-                # cur_image_idx += 1
                 continue
 
-            if labels is not None:
-                cur_label = labels[batch_idx]
-            else:
-                cur_label = None
-
-            if class_name_ids is not None:
-                cur_class_name_ids = class_name_ids[batch_idx]
-                cur_cls_indices = cls_indices[batch_idx]
-            else:
-                cur_class_name_ids = None
-                cur_cls_indices = None
-            if token_refer_id is not None:
-                cur_token_refer_id = token_refer_id[batch_idx]
-            else:
-                cur_token_refer_id = None
-
+            # 准备辅助嵌入
+            cur_label = labels[batch_idx] if labels is not None else None
+            cur_class_name_ids = class_name_ids[batch_idx] if class_name_ids is not None else None
+            cur_cls_indices = cls_indices[batch_idx] if cls_indices is not None else None
+            cur_token_refer_id = token_refer_id[batch_idx] if token_refer_id is not None else None
 
             cur_class_name_embedding = self.embed_class_ids(cur_class_name_ids, cur_cls_indices)
             cur_refer_embedding = self.embed_refer_ids(cur_token_refer_id)
 
+            # 调用拼接函数
+            # 注意：cur_image1_feature 在 Cross 任务中现在是 None，这是符合预期的，因为 <image1> 已从 Prompt 移除
             cur_input_embeds, cur_label, cur_seg_query_mask, cur_class_name_embedding_indices, cur_region_embedding_mask, cur_refer_embedding_indices = self.concat_image_seg_cls_embeds(
                 input_id=cur_input_ids,
-                img_feature=cur_image_feature,
-                img1_feature=cur_image1_feature,
+                img_feature=cur_image_feature,       # 目标图 (替换 <image>)
+                img1_feature=cur_image1_feature,     # 提示图 (None, 不会触发替换因为无 <image1>)
                 label=cur_label,
                 seg_query=cur_seg_query,
                 seg_query_mask=cur_seg_query_mask,
@@ -1775,171 +1685,80 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                 refer_embedding_indices=cur_refer_embedding_indices,
                 refer_embedding=cur_refer_embedding,
                 img_deform_feature=cur_image_deform_feature,
-                img1_deform_feature=cur_image1_deform_feature
+                img1_deform_feature=cur_image1_deform_feature # 融合特征 (替换 <image1_deform>)
             )
-            assert cur_input_embeds.shape[0] == cur_seg_query_mask.shape[0]
-
+            
             new_input_embeds.append(cur_input_embeds)
-            if labels is not None:
-                new_labels.append(cur_label)
+            if labels is not None: new_labels.append(cur_label)
             new_seg_query_masks.append(cur_seg_query_mask)
-            if class_name_embedding_indices is not None:
-                new_class_name_embedding_indices.append(cur_class_name_embedding_indices)
-            if refer_embedding_indices is not None:
-                new_refer_embedding_indices.append(cur_refer_embedding_indices)
-            if new_region_embedding_masks is not None:
-                new_region_embedding_masks.append(cur_region_embedding_mask)
+            if class_name_embedding_indices is not None: new_class_name_embedding_indices.append(cur_class_name_embedding_indices)
+            if refer_embedding_indices is not None: new_refer_embedding_indices.append(cur_refer_embedding_indices)
+            if new_region_embedding_masks is not None: new_region_embedding_masks.append(cur_region_embedding_mask)
+
+        # Padding 对齐逻辑 (保持原样)
         if any(x.shape != new_input_embeds[0].shape for x in new_input_embeds):
             max_len = max(x.shape[0] for x in new_input_embeds)
-
+            
+            # Pad Embeds
             new_input_embeds_align = []
             for cur_new_embed in new_input_embeds:
-                cur_new_embed = torch.cat((cur_new_embed,
-                                           torch.zeros((max_len - cur_new_embed.shape[0], cur_new_embed.shape[1]),
-                                                       dtype=cur_new_embed.dtype, device=cur_new_embed.device)),
-                                          dim=0)
+                cur_new_embed = torch.cat((cur_new_embed, torch.zeros((max_len - cur_new_embed.shape[0], cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device)), dim=0)
                 new_input_embeds_align.append(cur_new_embed)
             new_input_embeds = torch.stack(new_input_embeds_align, dim=0)
 
+            # Pad Labels
             if labels is not None:
                 new_labels_align = []
-                _new_labels = new_labels
                 for cur_new_label in new_labels:
-                    cur_new_label = torch.cat((cur_new_label,
-                                               torch.full((max_len - cur_new_label.shape[0],), IGNORE_INDEX,
-                                                          dtype=cur_new_label.dtype, device=cur_new_label.device)),
-                                              dim=0)
+                    cur_new_label = torch.cat((cur_new_label, torch.full((max_len - cur_new_label.shape[0],), IGNORE_INDEX, dtype=cur_new_label.dtype, device=cur_new_label.device)), dim=0)
                     new_labels_align.append(cur_new_label)
                 new_labels = torch.stack(new_labels_align, dim=0)
-
+            
+            # Pad Seg Query Masks
             new_seg_query_masks_align = []
-            for new_seg_query_mask in new_seg_query_masks:
-                new_seg_query_mask = torch.cat(
-                    (new_seg_query_mask, torch.zeros((max_len - new_seg_query_mask.shape[0]),dtype=new_seg_query_mask.dtype, device=new_seg_query_mask.device)),
-                    dim=0)
-                new_seg_query_masks_align.append(new_seg_query_mask)
+            for m in new_seg_query_masks:
+                m = torch.cat((m, torch.zeros((max_len - m.shape[0]), dtype=m.dtype, device=m.device)), dim=0)
+                new_seg_query_masks_align.append(m)
             new_seg_query_masks = torch.stack(new_seg_query_masks_align, dim=0)
 
-            new_class_name_embedding_indices_align = []
-
+            # Pad Other Indices
             if class_name_embedding_indices is not None:
-                for new_class_name_embedding_indice in new_class_name_embedding_indices:
-                    new_class_name_embedding_indice = torch.cat(
-                        (new_class_name_embedding_indice,
-                         torch.zeros((max_len - new_class_name_embedding_indice.shape[0]),dtype=new_class_name_embedding_indice.dtype, device=new_class_name_embedding_indice.device)),
-                        dim=0)
-                    new_class_name_embedding_indices_align.append(new_class_name_embedding_indice)
-                new_class_name_embedding_indices = torch.stack(new_class_name_embedding_indices_align, dim=0)
-
+                new_class_name_embedding_indices = torch.stack([torch.cat((x, torch.zeros((max_len - x.shape[0]), dtype=x.dtype, device=x.device)), dim=0) for x in new_class_name_embedding_indices], dim=0)
             if refer_embedding_indices is not None:
-                new_refer_embedding_indices_align = []
-                for new_refer_embedding_indice in new_refer_embedding_indices:
-                    new_refer_embedding_indice = torch.cat(
-                        (new_refer_embedding_indice,
-                         torch.zeros((max_len - new_refer_embedding_indice.shape[0]),dtype=new_refer_embedding_indice.dtype, device=new_refer_embedding_indice.device)),
-                        dim=0)
-                    new_refer_embedding_indices_align.append(new_refer_embedding_indice)
-                new_refer_embedding_indices = torch.stack(new_refer_embedding_indices_align, dim=0)
-
+                new_refer_embedding_indices = torch.stack([torch.cat((x, torch.zeros((max_len - x.shape[0]), dtype=x.dtype, device=x.device)), dim=0) for x in new_refer_embedding_indices], dim=0)
             if new_region_embedding_masks is not None:
-                new_region_embedding_masks_align = []
-                for new_region_embedding_mask in new_region_embedding_masks:
-                    new_region_embedding_mask = torch.cat(
-                        (new_region_embedding_mask, torch.zeros((max_len - new_region_embedding_mask.shape[0]),dtype=new_region_embedding_mask.dtype, device=new_region_embedding_mask.device)),
-                        dim=0)
-                    new_region_embedding_masks_align.append(new_region_embedding_mask)
-                new_region_embedding_masks = torch.stack(new_region_embedding_masks_align, dim=0)
+                new_region_embedding_masks = torch.stack([torch.cat((x, torch.zeros((max_len - x.shape[0]), dtype=x.dtype, device=x.device)), dim=0) for x in new_region_embedding_masks], dim=0)
 
+            # Pad Attention Mask (Left Padding)
             if attention_mask is not None:
-                new_attention_mask = []
-                for cur_attention_mask, cur_new_labels, cur_new_labels_align in zip(attention_mask, _new_labels,
-                                                                                    new_labels):
-                    new_attn_mask_pad_left = torch.full((cur_new_labels.shape[0] - labels.shape[1],), True,
-                                                        dtype=attention_mask.dtype, device=attention_mask.device)
-                    new_attn_mask_pad_right = torch.full((cur_new_labels_align.shape[0] - cur_new_labels.shape[0],),
-                                                         False, dtype=attention_mask.dtype,
-                                                         device=attention_mask.device)
-                    cur_new_attention_mask = torch.cat(
-                        (new_attn_mask_pad_left, cur_attention_mask, new_attn_mask_pad_right), dim=0)
-                    new_attention_mask.append(cur_new_attention_mask)
-                attention_mask = torch.stack(new_attention_mask, dim=0)
-                assert attention_mask.shape == new_labels.shape
-
+                pad_len = new_input_embeds.shape[1] - attention_mask.shape[1]
+                new_attn_mask_pad_left = torch.full((attention_mask.shape[0], pad_len), True, dtype=attention_mask.dtype, device=attention_mask.device)
+                attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
+        
         else:
             new_input_embeds = torch.stack(new_input_embeds, dim=0)
-            if labels is not None:
-                new_labels = torch.stack(new_labels, dim=0)
-
+            if labels is not None: new_labels = torch.stack(new_labels, dim=0)
             new_seg_query_masks = torch.stack(new_seg_query_masks, dim=0)
-            if class_name_embedding_indices is not None:
-                new_class_name_embedding_indices = torch.stack(new_class_name_embedding_indices, dim=0)
-            if refer_embedding_indices is not None:
-                new_refer_embedding_indices = torch.stack(new_refer_embedding_indices, dim=0)
-
-            if new_region_embedding_masks is not None:
-                new_region_embedding_masks = torch.stack(new_region_embedding_masks, dim=0)
-
+            if class_name_embedding_indices is not None: new_class_name_embedding_indices = torch.stack(new_class_name_embedding_indices, dim=0)
+            if refer_embedding_indices is not None: new_refer_embedding_indices = torch.stack(new_refer_embedding_indices, dim=0)
+            if new_region_embedding_masks is not None: new_region_embedding_masks = torch.stack(new_region_embedding_masks, dim=0)
             if attention_mask is not None:
-                # pad length should be based on current attention_mask width to avoid mismatch
                 pad_len = new_input_embeds.shape[1] - attention_mask.shape[1]
-                if pad_len < 0:
-                    # unexpected: new_input_embeds shorter than attention_mask, raise for debug
-                    raise AssertionError(f"new_input_embeds length {new_input_embeds.shape[1]} < attention_mask length {attention_mask.shape[1]}")
-                new_attn_mask_pad_left = torch.full(
-                    (attention_mask.shape[0], pad_len), True,
-                    dtype=attention_mask.dtype, device=attention_mask.device)
-                attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
-                # if new_region_embedding_masks is not None:
-                #     # pad region masks on the left to align with new_input_embeds
-                #     left_pad_region = torch.zeros((new_region_embedding_masks.shape[0], pad_len),
-                #                                   dtype=new_region_embedding_masks.dtype,
-                #                                   device=new_region_embedding_masks.device)
-                #     new_region_embedding_masks = torch.cat((left_pad_region, new_region_embedding_masks), dim=1)
+                if pad_len > 0:
+                    new_attn_mask_pad_left = torch.full((attention_mask.shape[0], pad_len), True, dtype=attention_mask.dtype, device=attention_mask.device)
+                    attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
 
-                if attention_mask.shape != new_input_embeds.shape[:2]:
-                    try:
-                        print('[PSALM-DEBUG] attention_mask.shape:', attention_mask.shape, 'new_input_embeds.shape:', new_input_embeds.shape)
-                        print('[PSALM-DEBUG] input_ids.shape:', input_ids.shape)
-                        # print first sample tokens and special token counts
-                        sample_input_ids = input_ids[0].tolist() if hasattr(input_ids, 'tolist') else None
-                        print('[PSALM-DEBUG] sample input_ids (first row, truncated):', sample_input_ids[:200] if sample_input_ids is not None else sample_input_ids)
-                        # count special tokens per sample
-                        try:
-                            # 使用模块顶部已导入的常量，避免在函数中再次导入导致名称被视为局部变量
-                            for i in range(min(4, input_ids.shape[0])):
-                                row = input_ids[i]
-                                counts = {
-                                    'IMAGE': int((row == IMAGE_TOKEN_INDEX).sum().item()),
-                                    'IMAGE1': int((row == IMAGE1_TOKEN_INDEX).sum().item()),
-                                    'IMAGE_DEFORM': int((row == IMAGE_DEFORM_TOKEN_INDEX).sum().item()),
-                                    'IMAGE1_DEFORM': int((row == IMAGE1_DEFORM_TOKEN_INDEX).sum().item()),
-                                    'SEG': int((row == SEG_TOKEN_INDEX).sum().item()),
-                                    'CLS': int((row == CLS_TOKEN_INDEX).sum().item()),
-                                    'REGION': int((row == REGION_TOKEN_INDEX).sum().item()),
-                                }
-                                print(f'[PSALM-DEBUG] row {i} special token counts:', counts)
-                        except Exception as e:
-                            print('[PSALM-DEBUG] failed to compute special token counts:', e)
-                    except Exception:
-                        pass
-                    raise AssertionError(f"attention_mask.shape {attention_mask.shape} != new_input_embeds.shape[:2] {new_input_embeds.shape[:2]}")
-
+        # 处理 Aux Loss
         if len(aux_similarity_maps) > 0:
-            # 假设每次 append 的是 [B_chunk, 1, H, W]，需要拼回去
-            # 如果 logic 比较复杂，可以先简化：只取第一个非空的作为代表，或者在这个函数里先不拼，直接返回 list
-            # 简单起见，如果是在 batch loop 外面算的，它应该就是 [B, 1, H, W]
-            # 如果是在 loop 里算的，需要 cat
-            if isinstance(aux_similarity_maps[0], torch.Tensor):
-                # 这种情况下通常已经是完整的 batch 或者 list of chunks
+             if isinstance(aux_similarity_maps[0], torch.Tensor):
                 if len(aux_similarity_maps) == 1:
                     aux_similarity_maps = aux_similarity_maps[0]
                 else:
                     aux_similarity_maps = torch.cat(aux_similarity_maps, dim=0)
         else:
-            aux_similarity_maps = None            
+            aux_similarity_maps = None
 
         return None, attention_mask, past_key_values, new_input_embeds, new_labels, new_seg_query_masks, new_class_name_embedding_indices, new_region_embedding_masks, new_refer_embedding_indices, aux_similarity_maps
-
 
     def get_SEG_embedding(self,hidden_states, refer_embedding_indices):
         refer_embedding_list = []
@@ -2263,7 +2082,7 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     
                     # 4. 计算 MSE Loss
                     # 这里的 300.0 是权重，可以根据 loss 大小调整
-                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 500.0
+                    loss_proposal = F.mse_loss(aux_similarity_maps.float(), gt_heatmap.float()) * 300.0
                 
         
                 loss_mask = 0.0
@@ -2288,7 +2107,8 @@ class PSALM(PhiForCausalLM, LlavaMetaForCausalLM):
                     else:
                         mask_losses.pop(k)
 
-                loss_region_class= loss_region_class*0.05        
+                loss_region_class= loss_region_class*0.05 
+                loss_mask = loss_mask*4.0       
                 mask_loss = loss_mask + loss_dice + loss_SEG_class + loss_class_name_class + loss_region_class + loss_proposal
                 
                 # 确保损失为张量类型

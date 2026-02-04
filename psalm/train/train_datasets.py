@@ -940,21 +940,20 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         print(f"category_ids: {category_ids}")
     
     def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
-                                 image1_token_index=IMAGE1_TOKEN_INDEX,
                                  image1_deform_token_index=IMAGE1_DEFORM_TOKEN_INDEX,
                                  seg_token_index=SEG_TOKEN_INDEX, cls_token_index=CLS_TOKEN_INDEX,
                                  region_token_index=REGION_TOKEN_INDEX, return_tensors=None):
         input_ids = []
-        # Cross-image dataset: only map <image1_deform>, do not map <image_deform> here.
+        # [修改点 1] 虽然我们 Prompt 里不再写 <image1>，但这里保留映射关系没问题，
+        # 为了兼容 tokenizer 的 split 逻辑，我们不需要动这里，只要 Prompt 文本里没有它就行。
         special_token_map = {
             '<image>': image_token_index,
-            '<image1>': image1_token_index,
             '<image1_deform>': image1_deform_token_index,
             '<seg>': seg_token_index,
             '<cls>': cls_token_index,
             '<region>': region_token_index,
         }
-        prompt_chunks = re.split('(<image>|<image1>|<image1_deform>|<seg>|<cls>|<region>)', prompt)
+        prompt_chunks = re.split('(<image>|<image1_deform>|<seg>|<cls>|<region>)', prompt)
 
         for chunk in prompt_chunks:
             if chunk in special_token_map:
@@ -969,30 +968,36 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
             return input_ids
 
     def preprocess_class_name(self, CLS_token='[CAT]'):
+        # ... (保持不变) ...
         tokenized = [self.tokenizer.encode(class_name, add_special_tokens=False) for class_name in self.coco_class_name]
         tokenized_class_names = [tokens + [self.tokenizer.encode(CLS_token, add_special_tokens=False)[0]] for tokens in
                                  tokenized]
-        # tokenized_class_names = [tokens for tokens in tokenized]
         class_name_id = [token for sublist in tokenized_class_names for token in sublist]
         class_name_id = torch.tensor(class_name_id)
         cls_indices = [idx for idx, sublist in enumerate(tokenized_class_names) for _ in sublist]
         cls_indices = torch.tensor(cls_indices)
-
         return class_name_id, cls_indices
+
     def __getitem__(self, idx):
         data = self.data[idx]
-        image_file = data['image_info']['image']
-        image_file1 = data['image1_info']['image']
+        image_file = data['image_info']['image']   # 提示图 (Source)
+        image_file1 = data['image1_info']['image'] # 目标图 (Target)
         image_folder = self.data_args.region_cross_image_folder
+        
         data_dict = {}
+        # 注意：这里我们先按原始逻辑加载，processor 会把 file_name 处理成 'image'
         data_dict['file_name'] = os.path.join(image_folder, image_file)
         data_dict['file_name1'] = os.path.join(image_folder, image_file1)
         data_dict['height'] = data['image_info']['height']
         data_dict['width'] = data['image_info']['width']
         data_dict['image_id'] = data['image_info']['img_id']
-        data_dict['annotations'] = data['annotations']
+        
+        # Annotations (Source): 用来生成 instances (Mask Prompts)
+        data_dict['annotations'] = data['annotations'] 
+        # Annotations1 (Target): 用来做 Ground Truth (Label)
         data_dict['annotations1'] = data['annotations1']
         
+        # ... (Annotation 处理部分保持不变) ...
         for annotation in data_dict['annotations']:
             annotation['bbox_mode'] = BoxMode.XYXY_ABS
             if annotation['category_id'] in self.coco_id_to_cont_id:
@@ -1012,29 +1017,59 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
             else:
                 raise ValueError
             annotation['image_id'] = data['image1_info']['img_id'] 
-        
 
+        # Processor 处理
         if isinstance(self.data_args.image_processor,dict):
             processor = self.data_args.image_processor['instance']
         else:
             processor = self.data_args.image_processor
         region_mask_type = getattr(self.data_args,'region_mask_type',None)
         if region_mask_type is not None:
-            region_mask_type = region_mask_type.split('||') #region_mask_type:['box_visual_prompt_mask', 'scribble_visual_prompt_mask', 'point_visual_prompt_mask']
+            region_mask_type = region_mask_type.split('||')
 
-        data_dict = processor.preprocess(data_dict,region_mask_type=region_mask_type)
+        # ⭐️ 预处理执行 ⭐️
+        # 此时：data_dict['image'] 是提示图 (Source)，data_dict['image1'] 是目标图 (Target)
+        # data_dict['instances'] 对应的是提示图的 Mask (因为 file_name 和 annotations 都是 Source 的)
+        data_dict = processor.preprocess(data_dict, region_mask_type=region_mask_type)
 
-        # raise ValueError("终止进程")
-        # This is an image <image>, Please doing Referring Segmentation according to the following instruction:
-        # This is an image <image>, Please segment by given regions
+        # ==================== [核心修改点：移花接木] ====================
+        # 我们要交换 'image' 和 'image1'
+        # 目的：让 data_dict['image'] 变成目标图（Target），这样它就会被送进 LLM
+        #       让 data_dict['image1'] 变成提示图（Source），我们在模型里只用它提取 Region Feature
+        
+        source_image_tensor = data_dict['image']   # 备份 Source Tensor
+        target_image_tensor = data_dict['image1']  # 备份 Target Tensor
+        
+        data_dict['image'] = target_image_tensor   # 现在 image 是目标图了！
+        data_dict['image1'] = source_image_tensor  # 现在 image1 是提示图了！
+        
+        # 注意：data_dict['instances'] 依然是 Source 的 Mask，这正是我们要的！
+        # 因为在模型里，我们要用 image1 (Source) + instances (Source Mask) 来提取特征。
+        # 逻辑完美闭环。
+        # ==============================================================
+
         num_target = len(data_dict['instances']) 
-        prefix_inst = 'Based on the regions indicated in source image <image>, Please doing Semantic Segmentation on this image <image1>.'
+        
+        # ==================== [修改 Prompt] ====================
+        # 旧 Prompt: ... source image <image>, ... on this image <image1>.
+        # 新 Prompt: ... region prompts, ... on this image <image>.
+        # 解释：现在的 <image> 对应 data_dict['image'] (即 Target)，正是我们要分割的图。
+        #       Source 图已经在文本中隐身了。
+        
+        prefix_inst = 'Based on the given region prompts, Please do Semantic Segmentation on this image <image>.'
         regions_inst = ' <region>,' * (num_target - 1) + ' <region>.'
         
-        # 检查是否使用deformable模式
         use_deformable = getattr(self.data_args, 'mm_projector_type', 'conv') == 'deformable'
         if use_deformable:
-            deformable_note = ' Note: Note: After the target image token (<image1>), there will be a sequence of deformable feature tokens (<image1_deform>) that contain early-fused features. These tokens are computed by using the region features extracted from Image <image> (the source image) as queries to sample from multi-scale visual features of Image <image1> (the target image) through deformable attention. Specifically, they represent multiple potential matching regions in the target image. You can use these deformable features as auxiliary information to better understand the cross-image relationship for more accurate segmentation of all matching instances.'
+            # 这里的 <image1_deform> 依然保留，因为它代表 Deformable 特征的位置
+            # 我们可以把它紧跟在 Target Image <image> 后面
+            deformable_note = (
+                ' Note: After the target image, there will be a sequence of deformable feature tokens <image1_deform> '
+                'that contain early-fused features. These tokens are computed by using the region features extracted '
+                'from the source image (the prompt) as queries to sample from the target image through deformable attention. '
+                'Specifically, they represent multiple potential matching regions in the target image. '
+                'Please use these deformable features as auxiliary information for more accurate segmentation.'
+            )
             sources_value = f'\nThis is all regions: {regions_inst}\n{deformable_note}\n'
         else:
             sources_value = f'\nThis is all regions: {regions_inst}\n'
@@ -1048,7 +1083,7 @@ class Cross_interactive_dataset(COCO_panoptic_dataset):
         labels = text_dict['labels'][0]
         data_dict['input_ids'] = input_ids
         data_dict['labels'] = labels
-        data_dict['dataset_type'] = 'region_cross_seg'
+        data_dict['dataset_type'] = 'region_cross_seg' # 保持这个，以便模型 forward 识别
 
         return data_dict
     
