@@ -112,20 +112,20 @@ class DataArguments:
     data_path: str = field(default=None, metadata={"help": "Path to the training data."})
     lazy_preprocess: bool = False
     is_multimodal: bool = False
-    region_cross_image_folder: Optional[str] = field(default='/nfs-data1/public/SIOR/images')
-    model_path: Optional[str] = field(default="/nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable/checkpoint-15440")
+    region_cross_image_folder: Optional[str] = field(default='/nfs-data1/public/test/images')
+    model_path: Optional[str] = field(default="/nfs-data1/lipeilang/output/checkpoint/PSALM_multi_query_deformable_new/checkpoint-5140")
     mask_config: Optional[str] = field(default="./psalm/mask_config/maskformer2_swin_base_384_bs16_50ep.yaml")
     image_aspect_ratio: str = 'square'
     image_grid_pinpoints: Optional[str] = field(default=None)
-    json_path: str = '/nfs-data1/public/12.03/interactive_category_14.json'
+    json_path: str = '/nfs-data1/public/test/newinteractive_category_6.json'
     model_map_name: str = 'psalm'
     version: str = 'llava_phi'  
-    output_dir: str = './output/interactive_segmentation'
+    output_dir: str = './output/interactive_segmentation1.21'
     segmentation: bool = True
     eval_batch_size: int = 4  
     dataloader_num_workers: int = 8
     seg_task: Optional[str] = field(default="region")
-    region_mask_type: Optional[str] = field(default="point_visual_prompt_mask") #'point_visual_prompt_mask||box_visual_prompt_mask||scribble_visual_prompt_mask||'
+    region_mask_type: Optional[str] = field(default="box_visual_prompt_mask") #'point_visual_prompt_mask||box_visual_prompt_mask||scribble_visual_prompt_mask||'
 
 
 def parse_outputs(outputs, gt_masks_batch):
@@ -169,7 +169,7 @@ def compute_metric(intersection_meter, union_meter, acc_iou_meter, results_list)
         scores = results['scores']
         pred_mask = []
         for i, score_ in enumerate(scores):
-            if score_ > 0.4:
+            if score_ > 0.6:
                 pred_mask.append(preds[i])
         if len(pred_mask) == 0:
             pred_mask = [np.zeros_like(gt, dtype=np.uint8)]
